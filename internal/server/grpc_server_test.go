@@ -7,9 +7,24 @@ import (
 	"path/filepath"
 	"testing"
 
-	"document_processing_service/internal/storage"
 	pb "github.com/AndrewK4758/shared_protos"
 )
+
+// mockStorage provides a dummy local disk storage for unit tests
+type mockStorage struct {
+	basePath string
+}
+
+func (m *mockStorage) FetchFile(ctx context.Context, relPath string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(m.basePath, relPath))
+}
+
+func (m *mockStorage) SaveFile(ctx context.Context, relPath string, data []byte) (string, error) {
+	full := filepath.Join(m.basePath, relPath)
+	os.MkdirAll(filepath.Dir(full), 0755)
+	err := os.WriteFile(full, data, 0644)
+	return relPath, err
+}
 
 // Helper function to create a test zip
 func createTestZip(t *testing.T, files map[string]string, zipPath string) {
@@ -38,7 +53,7 @@ func createTestZip(t *testing.T, files map[string]string, zipPath string) {
 
 func TestChunkDocument_Success(t *testing.T) {
 	tempDir := t.TempDir()
-	store, _ := storage.NewLocalStorage(tempDir)
+	store := &mockStorage{basePath: tempDir}
 	srv := NewDocumentProcessingServer(nil, store)
 
 	zipPath := filepath.Join(tempDir, "test_valid.zip")
@@ -67,7 +82,7 @@ func TestChunkDocument_Success(t *testing.T) {
 
 func TestChunkDocument_Failure(t *testing.T) {
 	tempDir := t.TempDir()
-	store, _ := storage.NewLocalStorage(tempDir)
+	store := &mockStorage{basePath: tempDir}
 	srv := NewDocumentProcessingServer(nil, store)
 
 	req := &pb.ChunkDocumentRequest{

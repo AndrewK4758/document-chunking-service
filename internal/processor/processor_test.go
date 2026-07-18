@@ -7,12 +7,27 @@ import (
 	"path/filepath"
 	"testing"
 
-	"document_processing_service/internal/storage"
 	pb "github.com/AndrewK4758/shared_protos"
 )
 
 // mockAiClient is a simple mock for the gRPC client
 type mockAiClient struct{} // We don't actually call it in ProcessZipFile yet since it's stubbed out.
+
+// mockStorage provides a dummy local disk storage for unit tests
+type mockStorage struct {
+	basePath string
+}
+
+func (m *mockStorage) FetchFile(ctx context.Context, relPath string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(m.basePath, relPath))
+}
+
+func (m *mockStorage) SaveFile(ctx context.Context, relPath string, data []byte) (string, error) {
+	full := filepath.Join(m.basePath, relPath)
+	os.MkdirAll(filepath.Dir(full), 0755)
+	err := os.WriteFile(full, data, 0644)
+	return relPath, err
+}
 
 func createTestZip(t *testing.T, files map[string]string, zipPath string) {
 	t.Helper()
@@ -48,7 +63,7 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 		"image.jpg": "dummy image",
 	}, zipPath)
 
-	store, _ := storage.NewLocalStorage(tempDir)
+	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RawFileBytes: zipBytes})
@@ -81,7 +96,7 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 		t.Fatalf("Failed to write bad zip: %v", err)
 	}
 
-	store, _ := storage.NewLocalStorage(tempDir)
+	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RelativeFilePath: "bad.zip"})
 	if err == nil {
@@ -99,7 +114,7 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 		"safe.pdf":            "safe pdf content",
 	}, zipPath)
 
-	store, _ := storage.NewLocalStorage(tempDir)
+	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RawFileBytes: zipBytes})
@@ -130,7 +145,7 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 func TestProcessZipFile_StorageDown(t *testing.T) {
 	// A valid storage manager, but we pass a file that doesn't exist
 	tempDir := t.TempDir()
-	store, _ := storage.NewLocalStorage(tempDir)
+	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
 
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
