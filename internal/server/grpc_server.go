@@ -23,7 +23,7 @@ func (s *DocumentProcessingServer) ChunkDocument(ctx context.Context, req *pb.Ch
 	log.Printf("Received ChunkDocument request for JobID: %s, ZipPath: %s", req.JobId, req.ZipFilePath)
 
 	// Call the processor logic to handle the extraction, chunking, and classification
-	docs, traceEvents, err := s.chunker.ProcessZipFile(ctx, req.ZipFilePath)
+	docs, traceEvents, err := s.chunker.ProcessZipFile(ctx, req)
 	if err != nil {
 		log.Printf("Error processing zip file for JobID %s: %v", req.JobId, err)
 		return &pb.ChunkDocumentResponse{

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	
+	pb "github.com/AndrewK4758/shared_protos"
 )
 
 // mockAiClient is a simple mock for the gRPC client
@@ -46,7 +48,7 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 	}, zipPath)
 
 	chunker := NewChunkingProcessor(nil)
-	docs, _, err := chunker.ProcessZipFile(context.Background(), zipPath)
+	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: zipPath})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -59,7 +61,7 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 
 func TestProcessZipFile_EmptyPath(t *testing.T) {
 	chunker := NewChunkingProcessor(nil)
-	_, _, err := chunker.ProcessZipFile(context.Background(), "")
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: ""})
 	if err == nil {
 		t.Fatal("Expected error for empty zip path, got nil")
 	}
@@ -77,7 +79,7 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 	}
 
 	chunker := NewChunkingProcessor(nil)
-	_, _, err := chunker.ProcessZipFile(context.Background(), invalidZip)
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: invalidZip})
 	if err == nil {
 		t.Fatal("Expected error for invalid zip, got nil")
 	}
@@ -94,7 +96,7 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 	}, zipPath)
 
 	chunker := NewChunkingProcessor(nil)
-	docs, _, err := chunker.ProcessZipFile(context.Background(), zipPath)
+	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: zipPath})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
