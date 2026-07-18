@@ -221,7 +221,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				addTrace(fmt.Sprintf("Evaluating slice pages %d-%d for boundaries", windowStart, windowEnd), "INFO")
 
 				sliceTempPath := filepath.Join(extractDir, fmt.Sprintf("slice_%d_%d.pdf", windowStart, windowEnd))
-				err := api.ExtractPagesFile(pdfPath, sliceTempPath, []string{fmt.Sprintf("%d-%d", windowStart, windowEnd)}, model.NewDefaultConfiguration())
+				err := api.TrimFile(pdfPath, sliceTempPath, []string{fmt.Sprintf("%d-%d", windowStart, windowEnd)}, model.NewDefaultConfiguration())
 
 				if err != nil {
 					addTrace(fmt.Sprintf("Failed to extract slice pages %d-%d: %v", windowStart, windowEnd, err), "ERROR")
@@ -283,7 +283,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 					if absoluteBoundary > currentDocStart && absoluteBoundary <= pageCount {
 						// Split!
 						chunkPath := filepath.Join(extractDir, fmt.Sprintf("chunk_%d_%d.pdf", currentDocStart, absoluteBoundary-1))
-						err = api.ExtractPagesFile(pdfPath, chunkPath, []string{fmt.Sprintf("%d-%d", currentDocStart, absoluteBoundary-1)}, model.NewDefaultConfiguration())
+						err = api.TrimFile(pdfPath, chunkPath, []string{fmt.Sprintf("%d-%d", currentDocStart, absoluteBoundary-1)}, model.NewDefaultConfiguration())
 						if err != nil {
 							addTrace(fmt.Sprintf("Failed to extract chunk pages %d-%d: %v", currentDocStart, absoluteBoundary-1, err), "ERROR")
 							return nil, traceEvents, fmt.Errorf("failed to extract chunk: %w", err)
@@ -327,7 +327,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				}
 
 				chunkPath := filepath.Join(extractDir, fmt.Sprintf("chunk_%d_%d.pdf", currentDocStart, pageCount))
-				err := api.ExtractPagesFile(pdfPath, chunkPath, []string{fmt.Sprintf("%d-%d", currentDocStart, pageCount)}, model.NewDefaultConfiguration())
+				err := api.TrimFile(pdfPath, chunkPath, []string{fmt.Sprintf("%d-%d", currentDocStart, pageCount)}, model.NewDefaultConfiguration())
 				if err != nil {
 					addTrace(fmt.Sprintf("Failed to extract final chunk pages %d-%d: %v", currentDocStart, pageCount, err), "ERROR")
 					return nil, traceEvents, fmt.Errorf("failed to extract final chunk: %w", err)
