@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"document_processing_service/internal/storage"
+
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -20,10 +21,10 @@ import (
 
 type ChunkingProcessor struct {
 	AiClient pb.DocumentProcessorClient
-	Store    storage.StorageManager
+	Store    storage.Manager
 }
 
-func NewChunkingProcessor(aiClient pb.DocumentProcessorClient, store storage.StorageManager) *ChunkingProcessor {
+func NewChunkingProcessor(aiClient pb.DocumentProcessorClient, store storage.Manager) *ChunkingProcessor {
 	return &ChunkingProcessor{
 		AiClient: aiClient,
 		Store:    store,
@@ -249,10 +250,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 					return processedDocs, traceEvents, err
 				}
 
-				windowEnd := windowStart + slidingWindowSize - 1
-				if windowEnd > pageCount {
-					windowEnd = pageCount
-				}
+				windowEnd := min(windowStart+slidingWindowSize-1, pageCount)
 
 				addTrace(fmt.Sprintf("Evaluating slice pages %d-%d for boundaries", windowStart, windowEnd), "INFO")
 

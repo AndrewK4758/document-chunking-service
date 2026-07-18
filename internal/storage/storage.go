@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-type StorageManager interface {
+type Manager interface {
 	FetchFile(ctx context.Context, relativePath string) ([]byte, error)
 	SaveFile(ctx context.Context, relativePath string, data []byte) (string, error)
 }

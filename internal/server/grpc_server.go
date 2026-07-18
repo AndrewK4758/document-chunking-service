@@ -6,6 +6,7 @@ import (
 
 	"document_processing_service/internal/processor"
 	"document_processing_service/internal/storage"
+
 	pb "github.com/AndrewK4758/shared_protos"
 )
 
@@ -14,7 +15,7 @@ type DocumentProcessingServer struct {
 	chunker *processor.ChunkingProcessor
 }
 
-func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store storage.StorageManager) *DocumentProcessingServer {
+func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store storage.Manager) *DocumentProcessingServer {
 	return &DocumentProcessingServer{
 		chunker: processor.NewChunkingProcessor(aiClient, store),
 	}
