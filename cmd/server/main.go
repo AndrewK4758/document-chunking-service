@@ -21,7 +21,7 @@ func main() {
 
 	port := os.Getenv("GRPC_PORT")
 	if port == "" {
-		port = "50054" // Default port for document_processing_service
+		port = "50052" // Default port for document_processing_service
 	}
 
 	lis, err := net.Listen("tcp", ":"+port)
