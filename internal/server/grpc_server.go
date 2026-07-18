@@ -4,8 +4,9 @@ import (
 	"context"
 	"log"
 
-	pb "github.com/AndrewK4758/shared_protos"
 	"document_processing_service/internal/processor"
+	"document_processing_service/internal/storage"
+	pb "github.com/AndrewK4758/shared_protos"
 )
 
 type DocumentProcessingServer struct {
@@ -13,14 +14,14 @@ type DocumentProcessingServer struct {
 	chunker *processor.ChunkingProcessor
 }
 
-func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient) *DocumentProcessingServer {
+func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store storage.StorageManager) *DocumentProcessingServer {
 	return &DocumentProcessingServer{
-		chunker: processor.NewChunkingProcessor(aiClient),
+		chunker: processor.NewChunkingProcessor(aiClient, store),
 	}
 }
 
 func (s *DocumentProcessingServer) ChunkDocument(ctx context.Context, req *pb.ChunkDocumentRequest) (*pb.ChunkDocumentResponse, error) {
-	log.Printf("Received ChunkDocument request for JobID: %s, ZipPath: %s", req.JobId, req.ZipFilePath)
+	log.Printf("Received ChunkDocument request for JobID: %s, RelativePath: %s", req.JobId, req.RelativeFilePath)
 
 	// Call the processor logic to handle the extraction, chunking, and classification
 	docs, traceEvents, err := s.chunker.ProcessZipFile(ctx, req)

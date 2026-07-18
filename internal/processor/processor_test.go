@@ -6,7 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	
+
+	"document_processing_service/internal/storage"
 	pb "github.com/AndrewK4758/shared_protos"
 )
 
@@ -42,13 +43,15 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 	zipPath := filepath.Join(tempDir, "test.zip")
 
 	createTestZip(t, map[string]string{
-		"doc1.pdf": "dummy pdf content",
-		"doc2.pdf": "dummy pdf content",
+		"doc1.pdf":  "dummy pdf content",
+		"doc2.pdf":  "dummy pdf content",
 		"image.jpg": "dummy image",
 	}, zipPath)
 
-	chunker := NewChunkingProcessor(nil)
-	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: zipPath})
+	store, _ := storage.NewLocalStorage(tempDir)
+	zipBytes, _ := os.ReadFile(zipPath)
+	chunker := NewChunkingProcessor(nil, store)
+	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RawFileBytes: zipBytes})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -60,12 +63,12 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 }
 
 func TestProcessZipFile_EmptyPath(t *testing.T) {
-	chunker := NewChunkingProcessor(nil)
-	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: ""})
+	chunker := NewChunkingProcessor(nil, nil)
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{})
 	if err == nil {
 		t.Fatal("Expected error for empty zip path, got nil")
 	}
-	if err.Error() != "zip path cannot be empty" {
+	if err.Error() != "no file data provided in request" {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 }
@@ -73,13 +76,14 @@ func TestProcessZipFile_EmptyPath(t *testing.T) {
 func TestProcessZipFile_InvalidZip(t *testing.T) {
 	tempDir := t.TempDir()
 	invalidZip := filepath.Join(tempDir, "bad.zip")
-	
+
 	if err := os.WriteFile(invalidZip, []byte("this is not a real zip format"), 0644); err != nil {
 		t.Fatalf("Failed to write bad zip: %v", err)
 	}
 
-	chunker := NewChunkingProcessor(nil)
-	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: invalidZip})
+	store, _ := storage.NewLocalStorage(tempDir)
+	chunker := NewChunkingProcessor(nil, store)
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RelativeFilePath: "bad.zip"})
 	if err == nil {
 		t.Fatal("Expected error for invalid zip, got nil")
 	}
@@ -95,8 +99,10 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 		"safe.pdf":            "safe pdf content",
 	}, zipPath)
 
-	chunker := NewChunkingProcessor(nil)
-	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{ZipFilePath: zipPath})
+	store, _ := storage.NewLocalStorage(tempDir)
+	zipBytes, _ := os.ReadFile(zipPath)
+	chunker := NewChunkingProcessor(nil, store)
+	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RawFileBytes: zipBytes})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -104,5 +110,37 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 	// Should only extract the safe.pdf
 	if len(docs) != 1 {
 		t.Errorf("Expected 1 processed document (malicious skipped), got %d", len(docs))
+	}
+}
+
+func TestProcessZipFile_ContextCancel(t *testing.T) {
+	chunker := NewChunkingProcessor(nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{RawFileBytes: []byte("dummy")})
+	if err == nil {
+		t.Fatal("Expected error due to context cancellation, got nil")
+	}
+	if err != context.Canceled {
+		t.Errorf("Expected context.Canceled error, got %v", err)
+	}
+}
+
+func TestProcessZipFile_StorageDown(t *testing.T) {
+	// A valid storage manager, but we pass a file that doesn't exist
+	tempDir := t.TempDir()
+	store, _ := storage.NewLocalStorage(tempDir)
+	chunker := NewChunkingProcessor(nil, store)
+
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
+		RelativeFilePath: "missing_from_storage.zip",
+	})
+
+	if err == nil {
+		t.Fatal("Expected error due to missing file, got nil")
+	}
+	if err.Error() == "no file data provided in request" {
+		t.Errorf("Expected storage fetch error, got missing data error")
 	}
 }

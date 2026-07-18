@@ -1,12 +1,13 @@
 package server
 
 import (
+	"archive/zip"
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
-	"archive/zip"
 
+	"document_processing_service/internal/storage"
 	pb "github.com/AndrewK4758/shared_protos"
 )
 
@@ -36,18 +37,20 @@ func createTestZip(t *testing.T, files map[string]string, zipPath string) {
 }
 
 func TestChunkDocument_Success(t *testing.T) {
-	srv := NewDocumentProcessingServer(nil)
-	
 	tempDir := t.TempDir()
+	store, _ := storage.NewLocalStorage(tempDir)
+	srv := NewDocumentProcessingServer(nil, store)
+
 	zipPath := filepath.Join(tempDir, "test_valid.zip")
 
 	createTestZip(t, map[string]string{
 		"doc1.pdf": "dummy",
 	}, zipPath)
 
+	zipBytes, _ := os.ReadFile(zipPath)
 	req := &pb.ChunkDocumentRequest{
-		JobId:       "job_123",
-		ZipFilePath: zipPath,
+		JobId:        "job_123",
+		RawFileBytes: zipBytes,
 	}
 
 	resp, err := srv.ChunkDocument(context.Background(), req)
@@ -63,11 +66,13 @@ func TestChunkDocument_Success(t *testing.T) {
 }
 
 func TestChunkDocument_Failure(t *testing.T) {
-	srv := NewDocumentProcessingServer(nil)
-	
+	tempDir := t.TempDir()
+	store, _ := storage.NewLocalStorage(tempDir)
+	srv := NewDocumentProcessingServer(nil, store)
+
 	req := &pb.ChunkDocumentRequest{
-		JobId:       "job_bad",
-		ZipFilePath: "nonexistent/path/to/bad.zip",
+		JobId:            "job_bad",
+		RelativeFilePath: "nonexistent/path/to/bad.zip",
 	}
 
 	resp, err := srv.ChunkDocument(context.Background(), req)
@@ -80,5 +85,24 @@ func TestChunkDocument_Failure(t *testing.T) {
 	}
 	if resp.ErrorMessage == "" {
 		t.Error("Expected an ErrorMessage, got empty string")
+	}
+}
+
+func TestChunkDocument_EmptyRequest(t *testing.T) {
+	srv := NewDocumentProcessingServer(nil, nil)
+
+	req := &pb.ChunkDocumentRequest{
+		JobId: "job_empty",
+	}
+
+	resp, err := srv.ChunkDocument(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Expected no gRPC error, got %v", err)
+	}
+	if resp.Success {
+		t.Error("Expected Success=false for empty request, got true")
+	}
+	if resp.ErrorMessage != "no file data provided in request" {
+		t.Errorf("Unexpected ErrorMessage: %s", resp.ErrorMessage)
 	}
 }
