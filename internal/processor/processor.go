@@ -1,17 +1,15 @@
 package processor
 
 import (
-	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
+	"document_processing_service/internal/archive"
 	"document_processing_service/internal/storage"
 
 	pb "github.com/AndrewK4758/shared_protos"
@@ -70,59 +68,27 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	}
 	defer os.RemoveAll(extractDir)
 
-	tempZipPath := filepath.Join(extractDir, "input.zip")
-	if err := os.WriteFile(tempZipPath, zipBytes, 0644); err != nil {
-		return nil, traceEvents, fmt.Errorf("failed to write temp zip file: %w", err)
+	// Determine original filename to preserve extension
+	originalFilename := "input.pdf"
+	if req.RelativeFilePath != "" {
+		originalFilename = filepath.Base(req.RelativeFilePath)
+	}
+	
+	tempInputPath := filepath.Join(extractDir, originalFilename)
+	if err := os.WriteFile(tempInputPath, zipBytes, 0644); err != nil {
+		return nil, traceEvents, fmt.Errorf("failed to write temp input file: %w", err)
 	}
 
-	r, err := zip.OpenReader(tempZipPath)
+	extractedPaths, err := archive.Extract(tempInputPath, extractDir)
 	if err != nil {
-		addTrace(fmt.Sprintf("Failed to open zip file: %v", err), "ERROR")
-		return nil, traceEvents, fmt.Errorf("failed to open zip file: %w", err)
+		addTrace(fmt.Sprintf("Failed to extract archive: %v", err), "ERROR")
+		return nil, traceEvents, fmt.Errorf("failed to extract archive: %w", err)
 	}
-	defer r.Close()
 
 	var extractedFiles []string
-	for _, f := range r.File {
-		if strings.Contains(f.Name, "..") {
-			addTrace(fmt.Sprintf("Skipping malicious zip path: %s", f.Name), "WARN")
-			continue
-		}
+	extractedFiles = append(extractedFiles, extractedPaths...)
 
-		extractedFilePath := filepath.Join(extractDir, f.Name)
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(extractedFilePath, f.Mode())
-			continue
-		}
-
-		if err := os.MkdirAll(filepath.Dir(extractedFilePath), 0755); err != nil {
-			return nil, traceEvents, fmt.Errorf("failed to create directory for file %s: %w", f.Name, err)
-		}
-
-		dstFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			return nil, traceEvents, fmt.Errorf("failed to create extracted file %s: %w", f.Name, err)
-		}
-
-		srcFile, err := f.Open()
-		if err != nil {
-			dstFile.Close()
-			return nil, traceEvents, fmt.Errorf("failed to open zip content %s: %w", f.Name, err)
-		}
-
-		_, err = io.Copy(dstFile, srcFile)
-		dstFile.Close()
-		srcFile.Close()
-		if err != nil {
-			return nil, traceEvents, fmt.Errorf("failed to write extracted file %s: %w", f.Name, err)
-		}
-
-		if strings.HasSuffix(strings.ToLower(f.Name), ".pdf") {
-			extractedFiles = append(extractedFiles, extractedFilePath)
-		}
-	}
-
-	addTrace(fmt.Sprintf("Extracted %d PDF files", len(extractedFiles)), "INFO")
+	addTrace(fmt.Sprintf("Extracted %d documents", len(extractedFiles)), "INFO")
 
 	maxPagesEnv := os.Getenv("MAX_PAGES_BEFORE_SPLIT")
 	maxPagesBeforeSplit := 20

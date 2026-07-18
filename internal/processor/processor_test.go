@@ -66,14 +66,17 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	chunker := NewChunkingProcessor(nil, store)
-	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RawFileBytes: zipBytes})
+	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
+		RawFileBytes:     zipBytes,
+		RelativeFilePath: "test.zip",
+	})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	// We expect 2 docs since there are 2 PDFs
-	if len(docs) != 2 {
-		t.Errorf("Expected 2 processed documents, got %d", len(docs))
+	// We expect 3 docs since there are 2 PDFs and 1 image (image will be flagged as corrupted/non-pdf but forwarded)
+	if len(docs) != 3 {
+		t.Errorf("Expected 3 processed documents, got %d", len(docs))
 	}
 }
 
@@ -117,7 +120,10 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	chunker := NewChunkingProcessor(nil, store)
-	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RawFileBytes: zipBytes})
+	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
+		RawFileBytes:     zipBytes,
+		RelativeFilePath: "slip.zip",
+	})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -133,7 +139,10 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{RawFileBytes: []byte("dummy")})
+	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
+		RawFileBytes:     []byte("dummy"),
+		RelativeFilePath: "dummy.zip",
+	})
 	if err == nil {
 		t.Fatal("Expected error due to context cancellation, got nil")
 	}
