@@ -5,14 +5,16 @@ go 1.26.4
 require (
 	github.com/AndrewK4758/shared_protos v0.0.0-20260717031111-875804e35fbb
 	github.com/joho/godotenv v1.5.1
+	github.com/pdfcpu/pdfcpu v0.13.0
 	google.golang.org/grpc v1.82.1
 )
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/hhrutter/lzw v1.0.0 // indirect
 	github.com/hhrutter/pkcs7 v0.2.2 // indirect
 	github.com/hhrutter/tiff v1.0.3 // indirect
-	github.com/pdfcpu/pdfcpu v0.13.0 // indirect
+	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/image v0.41.0 // indirect

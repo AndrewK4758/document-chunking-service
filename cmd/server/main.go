@@ -53,15 +53,18 @@ func main() {
 		log.Printf("AI Service Models Loaded - Text: %v, OCR: %v", modelsResp.TextModels, modelsResp.OcrModels)
 	}
 
-	// Initialize Storage Manager
-	basePath := os.Getenv("DOCUMENT_STORE_BASE_PATH")
-	if basePath == "" {
-		basePath = "/tmp/doc_store"
+	// Initialize Storage Gateway Client
+	gatewayAddr := os.Getenv("STORAGE_GATEWAY_ADDR")
+	if gatewayAddr == "" {
+		gatewayAddr = "localhost:50058"
 	}
-	store, err := storage.NewLocalStorage(basePath)
+	gatewayConn, err := grpc.Dial(gatewayAddr, grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("failed to initialize storage manager: %v", err)
+		log.Fatalf("failed to dial storage_gateway: %v", err)
 	}
+	defer gatewayConn.Close()
+
+	store := storage.NewGatewayStorage(pb.NewStorageGatewayServiceClient(gatewayConn))
 
 	// Register the DocumentProcessingService
 	docServer := server.NewDocumentProcessingServer(aiClient, store)
