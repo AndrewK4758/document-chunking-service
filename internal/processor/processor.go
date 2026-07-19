@@ -163,16 +163,24 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 					Prompt: sysContext,
 				}
 
-				resp, err := p.AiClient.PerformAction(ctx, &pb.PerformActionRequest{
-					Context:       req.OriginalRequest,
-					CurrentAction: actionDef,
-					InputBytes:    inputBytes,
-					ModelChoice:   modelChoice,
-				})
+				stream, err := p.AiClient.PerformAction(ctx)
+				var resp *pb.PerformActionResponse
+				if err == nil {
+					err = stream.Send(&pb.PerformActionRequest{
+						Context:       req.OriginalRequest,
+						CurrentAction: actionDef,
+						InputBytes:    inputBytes,
+						ModelChoice:   modelChoice,
+					})
+					if err == nil {
+						stream.CloseSend()
+						resp, err = stream.Recv()
+					}
+				}
 
 				if err != nil {
 					addTrace(fmt.Sprintf("AI Classification failed: %v", err), "ERROR")
-				} else {
+				} else if resp != nil {
 					addTrace(fmt.Sprintf("AI Classification successful: %s", resp.ActionResultJson), "INFO")
 				}
 			}
@@ -252,14 +260,22 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 						Prompt: prompt,
 					}
 
-					resp, err := p.AiClient.PerformAction(ctx, &pb.PerformActionRequest{
-						Context:       req.OriginalRequest,
-						CurrentAction: actionDef,
-						InputBytes:    sliceBytes,
-						ModelChoice:   pb.ModelChoice_MODEL_CHOICE_OCR,
-					})
+					stream, err := p.AiClient.PerformAction(ctx)
+					var resp *pb.PerformActionResponse
+					if err == nil {
+						err = stream.Send(&pb.PerformActionRequest{
+							Context:       req.OriginalRequest,
+							CurrentAction: actionDef,
+							InputBytes:    sliceBytes,
+							ModelChoice:   pb.ModelChoice_MODEL_CHOICE_OCR,
+						})
+						if err == nil {
+							stream.CloseSend()
+							resp, err = stream.Recv()
+						}
+					}
 
-					if err == nil && resp.Success {
+					if err == nil && resp != nil && resp.Success {
 						var boundResp struct {
 							BoundaryPageInSlice int `json:"boundary_page_in_slice"`
 						}

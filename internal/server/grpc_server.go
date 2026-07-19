@@ -1,7 +1,7 @@
 package server
 
 import (
-	"context"
+	"io"
 	"log"
 
 	"document_processing_service/internal/processor"
@@ -21,24 +21,35 @@ func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store stor
 	}
 }
 
-func (s *DocumentProcessingServer) ChunkDocument(ctx context.Context, req *pb.ChunkDocumentRequest) (*pb.ChunkDocumentResponse, error) {
-	log.Printf("Received ChunkDocument request for JobID: %s, RelativePath: %s", req.Identity.JobId, req.RelativeFilePath)
+func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingService_ChunkDocumentServer) error {
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 
-	// Call the processor logic to handle the extraction, chunking, and classification
-	docs, traceEvents, err := s.chunker.ProcessZipFile(ctx, req)
-	if err != nil {
-		log.Printf("Error processing zip file for JobID %s: %v", req.Identity.JobId, err)
-		return &pb.ChunkDocumentResponse{
-			Success:      false,
-			ErrorMessage: err.Error(),
-			TraceEvents:  traceEvents,
-		}, nil
+		log.Printf("Received ChunkDocument request for JobID: %s, RelativePath: %s", req.Identity.JobId, req.RelativeFilePath)
+
+		docs, traceEvents, err := s.chunker.ProcessZipFile(stream.Context(), req)
+		resp := &pb.ChunkDocumentResponse{
+			TraceEvents: traceEvents,
+		}
+
+		if err != nil {
+			log.Printf("Error processing zip file for JobID %s: %v", req.Identity.JobId, err)
+			resp.Success = false
+			resp.ErrorMessage = err.Error()
+		} else {
+			log.Printf("Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.JobId, len(docs))
+			resp.Success = true
+			resp.ProcessedDocuments = docs
+		}
+
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
 	}
-
-	log.Printf("Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.JobId, len(docs))
-	return &pb.ChunkDocumentResponse{
-		Success:            true,
-		ProcessedDocuments: docs,
-		TraceEvents:        traceEvents,
-	}, nil
 }
