@@ -15,7 +15,7 @@ type mockStorage struct {
 	basePath string
 }
 
-func (m *mockStorage) FetchFile(ctx context.Context, relPath string) ([]byte, error) {
+func (m *mockStorage) FetchFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity) ([]byte, error) {
 	return os.ReadFile(filepath.Join(m.basePath, relPath))
 }
 
@@ -64,7 +64,7 @@ func TestChunkDocument_Success(t *testing.T) {
 
 	zipBytes, _ := os.ReadFile(zipPath)
 	req := &pb.ChunkDocumentRequest{
-		JobId:        "job_123",
+		Identity:     &pb.InfrastructureIdentity{JobId: "job_123"},
 		RawFileBytes: zipBytes,
 	}
 
@@ -86,7 +86,7 @@ func TestChunkDocument_Failure(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, store)
 
 	req := &pb.ChunkDocumentRequest{
-		JobId:            "job_bad",
+		Identity:         &pb.InfrastructureIdentity{JobId: "job_bad"},
 		RelativeFilePath: "nonexistent/path/to/bad.zip",
 	}
 
@@ -107,7 +107,7 @@ func TestChunkDocument_EmptyRequest(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, nil)
 
 	req := &pb.ChunkDocumentRequest{
-		JobId: "job_empty",
+		Identity: &pb.InfrastructureIdentity{JobId: "job_empty"},
 	}
 
 	resp, err := srv.ChunkDocument(context.Background(), req)

@@ -22,12 +22,12 @@ func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store stor
 }
 
 func (s *DocumentProcessingServer) ChunkDocument(ctx context.Context, req *pb.ChunkDocumentRequest) (*pb.ChunkDocumentResponse, error) {
-	log.Printf("Received ChunkDocument request for JobID: %s, RelativePath: %s", req.JobId, req.RelativeFilePath)
+	log.Printf("Received ChunkDocument request for JobID: %s, RelativePath: %s", req.Identity.JobId, req.RelativeFilePath)
 
 	// Call the processor logic to handle the extraction, chunking, and classification
 	docs, traceEvents, err := s.chunker.ProcessZipFile(ctx, req)
 	if err != nil {
-		log.Printf("Error processing zip file for JobID %s: %v", req.JobId, err)
+		log.Printf("Error processing zip file for JobID %s: %v", req.Identity.JobId, err)
 		return &pb.ChunkDocumentResponse{
 			Success:      false,
 			ErrorMessage: err.Error(),
@@ -35,7 +35,7 @@ func (s *DocumentProcessingServer) ChunkDocument(ctx context.Context, req *pb.Ch
 		}, nil
 	}
 
-	log.Printf("Successfully processed zip file for JobID %s, extracted %d documents", req.JobId, len(docs))
+	log.Printf("Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.JobId, len(docs))
 	return &pb.ChunkDocumentResponse{
 		Success:            true,
 		ProcessedDocuments: docs,

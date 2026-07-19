@@ -18,7 +18,7 @@ type mockStorage struct {
 	basePath string
 }
 
-func (m *mockStorage) FetchFile(ctx context.Context, relPath string) ([]byte, error) {
+func (m *mockStorage) FetchFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity) ([]byte, error) {
 	return os.ReadFile(filepath.Join(m.basePath, relPath))
 }
 

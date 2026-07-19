@@ -29,7 +29,7 @@ func forwardMetadata(ctx context.Context) context.Context {
 	return ctx
 }
 
-func (g *GatewayStorage) FetchFile(ctx context.Context, relativePath string) ([]byte, error) {
+func (g *GatewayStorage) FetchFile(ctx context.Context, relativePath string, identity *pb.InfrastructureIdentity) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -37,6 +37,7 @@ func (g *GatewayStorage) FetchFile(ctx context.Context, relativePath string) ([]
 	reqCtx := forwardMetadata(ctx)
 	req := &pb.DownloadRequest{
 		StorageUri: relativePath, // For gateway fetch, the relative path is the actual internal-store:// URI
+		Identity: identity,
 	}
 
 	stream, err := g.client.DownloadDocument(reqCtx, req)
@@ -82,7 +83,7 @@ func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, data
 	err = stream.Send(&pb.UploadRequest{
 		UploadElement: &pb.UploadRequest_Metadata{
 			Metadata: &pb.UploadMetadata{
-				JobId:            jobID,
+				Identity:         &pb.InfrastructureIdentity{JobId: jobID},
 				OriginalFilename: filename,
 			},
 		},

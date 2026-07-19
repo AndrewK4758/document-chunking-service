@@ -53,7 +53,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 		if p.Store == nil {
 			return nil, traceEvents, fmt.Errorf("storage manager is not configured")
 		}
-		zipBytes, err = p.Store.FetchFile(ctx, req.RelativeFilePath)
+		zipBytes, err = p.Store.FetchFile(ctx, req.RelativeFilePath, req.Identity)
 		if err != nil {
 			addTrace(fmt.Sprintf("Failed to fetch file: %v", err), "ERROR")
 			return nil, traceEvents, fmt.Errorf("failed to fetch from store: %w", err)
@@ -62,7 +62,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 		return nil, traceEvents, fmt.Errorf("no file data provided in request")
 	}
 
-	extractDir := filepath.Join(os.TempDir(), fmt.Sprintf("chunking_job_%s_%d", req.JobId, time.Now().UnixNano()))
+	extractDir := filepath.Join(os.TempDir(), fmt.Sprintf("chunking_job_%s_%d", req.GetIdentity().GetJobId(), time.Now().UnixNano()))
 	if err := os.MkdirAll(extractDir, 0755); err != nil {
 		return nil, traceEvents, fmt.Errorf("failed to create extraction directory: %w", err)
 	}
@@ -180,7 +180,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			// Upload the single document back to storage
 			var relativePath string
 			if p.Store != nil {
-				uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", req.JobId, filepath.Base(pdfPath)), inputBytes)
+				uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", req.GetIdentity().GetJobId(), filepath.Base(pdfPath)), inputBytes)
 				if err != nil {
 					addTrace(fmt.Sprintf("Failed to upload classified doc: %v", err), "ERROR")
 				} else {
@@ -294,7 +294,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 						var relativePath string
 						if p.Store != nil {
 							chunkBytes, _ := os.ReadFile(chunkPath)
-							uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.JobId, chunkIndex), chunkBytes)
+							uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), chunkBytes)
 							if err == nil {
 								relativePath = uploadedPath
 							}
@@ -338,7 +338,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				var relativePath string
 				if p.Store != nil {
 					chunkBytes, _ := os.ReadFile(chunkPath)
-					uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.JobId, chunkIndex), chunkBytes)
+					uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), chunkBytes)
 					if err == nil {
 						relativePath = uploadedPath
 					}

@@ -95,7 +95,7 @@ func TestGatewayStorage_FetchFile_Success(t *testing.T) {
 	store := NewGatewayStorage(mockClient)
 
 	ctx := context.Background()
-	data, err := store.FetchFile(ctx, "internal-store://test")
+	data, err := store.FetchFile(ctx, "internal-store://test", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestGatewayStorage_FetchFile_StreamError(t *testing.T) {
 	}
 	store := NewGatewayStorage(mockClient)
 
-	_, err := store.FetchFile(context.Background(), "internal-store://test")
+	_, err := store.FetchFile(context.Background(), "internal-store://test", nil)
 	if err == nil {
 		t.Fatal("Expected error on stream interruption, got nil")
 	}
@@ -182,7 +182,7 @@ func TestGatewayStorage_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, err := store.FetchFile(ctx, "internal-store://test")
+	_, err := store.FetchFile(ctx, "internal-store://test", nil)
 	if err != context.Canceled {
 		t.Errorf("Expected context.Canceled on FetchFile, got %v", err)
 	}
