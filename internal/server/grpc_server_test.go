@@ -68,7 +68,9 @@ func TestChunkDocument_Success(t *testing.T) {
 		RawFileBytes: zipBytes,
 	}
 
-	resp, err := srv.ChunkDocument(context.Background(), req)
+	mockStream := &mockChunkDocumentServer{req: req}
+	err := srv.ChunkDocument(mockStream)
+	resp := mockStream.resp
 	if err != nil {
 		t.Fatalf("Expected no err, got %v", err)
 	}
@@ -90,7 +92,9 @@ func TestChunkDocument_Failure(t *testing.T) {
 		RelativeFilePath: "nonexistent/path/to/bad.zip",
 	}
 
-	resp, err := srv.ChunkDocument(context.Background(), req)
+	mockStream := &mockChunkDocumentServer{req: req}
+	err := srv.ChunkDocument(mockStream)
+	resp := mockStream.resp
 	// It shouldn't return a raw gRPC error, but rather return a graceful pb.ChunkDocumentResponse with Success=false
 	if err != nil {
 		t.Fatalf("Expected no gRPC error, got %v", err)
@@ -110,7 +114,9 @@ func TestChunkDocument_EmptyRequest(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{JobId: "job_empty"},
 	}
 
-	resp, err := srv.ChunkDocument(context.Background(), req)
+	mockStream := &mockChunkDocumentServer{req: req}
+	err := srv.ChunkDocument(mockStream)
+	resp := mockStream.resp
 	if err != nil {
 		t.Fatalf("Expected no gRPC error, got %v", err)
 	}

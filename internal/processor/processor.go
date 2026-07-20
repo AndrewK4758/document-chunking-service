@@ -171,6 +171,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 						CurrentAction: actionDef,
 						InputBytes:    inputBytes,
 						ModelChoice:   modelChoice,
+						Identity:      req.GetIdentity(),
 					})
 					if err == nil {
 						stream.CloseSend()
@@ -268,6 +269,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 							CurrentAction: actionDef,
 							InputBytes:    sliceBytes,
 							ModelChoice:   pb.ModelChoice_MODEL_CHOICE_OCR,
+							Identity:      req.GetIdentity(),
 						})
 						if err == nil {
 							stream.CloseSend()

@@ -46,7 +46,13 @@ func main() {
 	aiClient := pb.NewDocumentProcessorClient(aiConn)
 
 	// Query available models on startup
-	modelsResp, err := aiClient.GetAvailableModels(context.Background(), &pb.GetAvailableModelsRequest{})
+	modelsResp, err := aiClient.GetAvailableModels(context.Background(), &pb.GetAvailableModelsRequest{
+		Identity: &pb.InfrastructureIdentity{
+			TenantId: "system",
+			AppId:    "doc_processor_startup",
+			JobId:    "startup",
+		},
+	})
 	if err != nil {
 		log.Printf("Warning: failed to query AI service for available models: %v", err)
 	} else {
