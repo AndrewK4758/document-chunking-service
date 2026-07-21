@@ -118,7 +118,8 @@ func TestGatewayStorage_SaveFile_Success(t *testing.T) {
 	store := NewGatewayStorage(mockClient)
 
 	ctx := context.Background()
-	uri, err := store.SaveFile(ctx, "job123/file.pdf", []byte("data"))
+	identity := &pb.InfrastructureIdentity{JobId: "job123"}
+	uri, err := store.SaveFile(ctx, "job123/file.pdf", identity, []byte("data"))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -133,7 +134,8 @@ func TestGatewayStorage_SaveFile_Success(t *testing.T) {
 
 func TestGatewayStorage_SaveFile_InvalidPath(t *testing.T) {
 	store := NewGatewayStorage(&mockStorageGatewayClient{})
-	_, err := store.SaveFile(context.Background(), "invalidpath", []byte("data"))
+	identity := &pb.InfrastructureIdentity{JobId: "job123"}
+	_, err := store.SaveFile(context.Background(), "invalidpath", identity, []byte("data"))
 	if err == nil {
 		t.Fatal("Expected error for invalid path, got nil")
 	}
@@ -168,7 +170,8 @@ func TestGatewayStorage_SaveFile_Rejected(t *testing.T) {
 	}
 	store := NewGatewayStorage(mockClient)
 
-	_, err := store.SaveFile(context.Background(), "job123/file.pdf", []byte("data"))
+	identity := &pb.InfrastructureIdentity{JobId: "job123"}
+	_, err := store.SaveFile(context.Background(), "job123/file.pdf", identity, []byte("data"))
 	if err == nil {
 		t.Fatal("Expected error on server rejection, got nil")
 	}
@@ -187,7 +190,8 @@ func TestGatewayStorage_ContextCancellation(t *testing.T) {
 		t.Errorf("Expected context.Canceled on FetchFile, got %v", err)
 	}
 
-	_, err = store.SaveFile(ctx, "job123/file.pdf", []byte("data"))
+	identity := &pb.InfrastructureIdentity{JobId: "job123"}
+	_, err = store.SaveFile(ctx, "job123/file.pdf", identity, []byte("data"))
 	if err != context.Canceled {
 		t.Errorf("Expected context.Canceled on SaveFile, got %v", err)
 	}
@@ -197,10 +201,10 @@ func TestGatewayStorage_ForwardMetadata(t *testing.T) {
 	// Add incoming metadata
 	md := metadata.Pairs("tenant_id", "test_tenant")
 	ctx := metadata.NewIncomingContext(context.Background(), md)
-	
+
 	// Forward it
 	reqCtx := forwardMetadata(ctx)
-	
+
 	// Verify it exists in outgoing
 	outMD, ok := metadata.FromOutgoingContext(reqCtx)
 	if !ok {

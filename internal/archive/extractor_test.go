@@ -67,7 +67,7 @@ func createTestTarGz(t *testing.T, files map[string]string, tarPath string) {
 func TestExtract_RawDocument(t *testing.T) {
 	tempDir := t.TempDir()
 	docPath := filepath.Join(tempDir, "document.pdf")
-	
+
 	if err := os.WriteFile(docPath, []byte("dummy pdf content"), 0644); err != nil {
 		t.Fatalf("Failed to write dummy pdf: %v", err)
 	}

@@ -37,7 +37,7 @@ func (g *GatewayStorage) FetchFile(ctx context.Context, relativePath string, ide
 	reqCtx := forwardMetadata(ctx)
 	req := &pb.DownloadRequest{
 		StorageUri: relativePath, // For gateway fetch, the relative path is the actual internal-store:// URI
-		Identity: identity,
+		Identity:   identity,
 	}
 
 	stream, err := g.client.DownloadDocument(reqCtx, req)
@@ -60,7 +60,7 @@ func (g *GatewayStorage) FetchFile(ctx context.Context, relativePath string, ide
 	return data, nil
 }
 
-func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, data []byte) (string, error) {
+func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, identity *pb.InfrastructureIdentity, data []byte) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -70,7 +70,6 @@ func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, data
 	if len(parts) != 2 {
 		return "", fmt.Errorf("invalid save path format, expected jobID/filename, got: %s", relativePath)
 	}
-	jobID := parts[0]
 	filename := parts[1]
 
 	reqCtx := forwardMetadata(ctx)
@@ -83,7 +82,7 @@ func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, data
 	err = stream.Send(&pb.UploadRequest{
 		UploadElement: &pb.UploadRequest_Metadata{
 			Metadata: &pb.UploadMetadata{
-				Identity:         &pb.InfrastructureIdentity{JobId: jobID},
+				Identity:         identity,
 				OriginalFilename: filename,
 			},
 		},

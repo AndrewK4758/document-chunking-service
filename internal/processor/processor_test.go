@@ -22,7 +22,7 @@ func (m *mockStorage) FetchFile(ctx context.Context, relPath string, identity *p
 	return os.ReadFile(filepath.Join(m.basePath, relPath))
 }
 
-func (m *mockStorage) SaveFile(ctx context.Context, relPath string, data []byte) (string, error) {
+func (m *mockStorage) SaveFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity, data []byte) (string, error) {
 	full := filepath.Join(m.basePath, relPath)
 	os.MkdirAll(filepath.Dir(full), 0755)
 	err := os.WriteFile(full, data, 0644)

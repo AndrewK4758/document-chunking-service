@@ -2,17 +2,17 @@ package server
 
 import (
 	"context"
-	"io"
 	pb "github.com/AndrewK4758/shared_protos"
 	"google.golang.org/grpc"
+	"io"
 )
 
 type mockChunkDocumentServer struct {
 	grpc.ServerStream
-	ctx      context.Context
-	req      *pb.ChunkDocumentRequest
-	resp     *pb.ChunkDocumentResponse
-	reqSent  bool
+	ctx     context.Context
+	req     *pb.ChunkDocumentRequest
+	resp    *pb.ChunkDocumentResponse
+	reqSent bool
 }
 
 func (m *mockChunkDocumentServer) Context() context.Context {

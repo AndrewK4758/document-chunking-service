@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"io"
 	"log"
 
@@ -28,7 +29,7 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 			return nil
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to receive chunk document request from stream: %w", err)
 		}
 
 		log.Printf("Received ChunkDocument request for JobID: %s, RelativePath: %s", req.Identity.JobId, req.RelativeFilePath)
@@ -49,7 +50,7 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 		}
 
 		if err := stream.Send(resp); err != nil {
-			return err
+			return fmt.Errorf("failed to send chunk document response to stream: %w", err)
 		}
 	}
 }

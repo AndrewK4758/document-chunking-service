@@ -8,5 +8,5 @@ import (
 
 type Manager interface {
 	FetchFile(ctx context.Context, relativePath string, identity *pb.InfrastructureIdentity) ([]byte, error)
-	SaveFile(ctx context.Context, relativePath string, data []byte) (string, error)
+	SaveFile(ctx context.Context, relativePath string, identity *pb.InfrastructureIdentity, data []byte) (string, error)
 }

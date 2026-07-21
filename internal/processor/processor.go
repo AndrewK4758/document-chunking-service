@@ -73,7 +73,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	if req.RelativeFilePath != "" {
 		originalFilename = filepath.Base(req.RelativeFilePath)
 	}
-	
+
 	tempInputPath := filepath.Join(extractDir, originalFilename)
 	if err := os.WriteFile(tempInputPath, zipBytes, 0644); err != nil {
 		return nil, traceEvents, fmt.Errorf("failed to write temp input file: %w", err)
@@ -189,7 +189,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			// Upload the single document back to storage
 			var relativePath string
 			if p.Store != nil {
-				uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", req.GetIdentity().GetJobId(), filepath.Base(pdfPath)), inputBytes)
+				uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", req.GetIdentity().GetJobId(), filepath.Base(pdfPath)), req.GetIdentity(), inputBytes)
 				if err != nil {
 					addTrace(fmt.Sprintf("Failed to upload classified doc: %v", err), "ERROR")
 				} else {
@@ -312,7 +312,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 						var relativePath string
 						if p.Store != nil {
 							chunkBytes, _ := os.ReadFile(chunkPath)
-							uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), chunkBytes)
+							uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), req.GetIdentity(), chunkBytes)
 							if err == nil {
 								relativePath = uploadedPath
 							}
@@ -356,7 +356,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				var relativePath string
 				if p.Store != nil {
 					chunkBytes, _ := os.ReadFile(chunkPath)
-					uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), chunkBytes)
+					uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), req.GetIdentity(), chunkBytes)
 					if err == nil {
 						relativePath = uploadedPath
 					}

@@ -46,7 +46,7 @@ func Extract(archivePath, destinationDir string) ([]string, error) {
 	var extractedFiles []string
 	err := filepath.Walk(destinationDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to walk directory path %s: %w", path, err)
 		}
 		if !info.IsDir() {
 			// Skip the original archive file itself
@@ -63,13 +63,16 @@ func Extract(archivePath, destinationDir string) ([]string, error) {
 		return nil
 	})
 
-	return extractedFiles, err
+	if err != nil {
+		return extractedFiles, fmt.Errorf("failed walking extracted files directory: %w", err)
+	}
+	return extractedFiles, nil
 }
 
 func extract7z(archivePath, destinationDir string) error {
 	r, err := sevenzip.OpenReader(archivePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open 7z reader: %w", err)
 	}
 	defer r.Close()
 
@@ -85,25 +88,25 @@ func extract7z(archivePath, destinationDir string) error {
 		}
 
 		if err := os.MkdirAll(filepath.Dir(extractedFilePath), 0755); err != nil {
-			return err
+			return fmt.Errorf("failed to create directory for 7z extraction: %w", err)
 		}
 
 		dstFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to open destination file for 7z extraction: %w", err)
 		}
 
 		srcFile, err := f.Open()
 		if err != nil {
 			dstFile.Close()
-			return err
+			return fmt.Errorf("failed to open source file from 7z archive: %w", err)
 		}
 
 		_, err = io.Copy(dstFile, srcFile)
 		dstFile.Close()
 		srcFile.Close()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to copy 7z file contents: %w", err)
 		}
 	}
 	return nil
