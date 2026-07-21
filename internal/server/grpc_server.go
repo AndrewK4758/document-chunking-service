@@ -32,7 +32,11 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 			return fmt.Errorf("failed to receive chunk document request from stream: %w", err)
 		}
 
-		log.Printf("Received ChunkDocument request for JobID: %s, RelativePath: %s", req.Identity.JobId, req.RelativeFilePath)
+		docUri := "unknown"
+		if req.DocumentChunking != nil {
+			docUri = req.DocumentChunking.DocumentStorageUri
+		}
+		log.Printf("Received ChunkDocument request for JobID: %s, DocumentStorageUri: %s", req.Identity.JobId, docUri)
 
 		docs, traceEvents, err := s.chunker.ProcessZipFile(stream.Context(), req)
 		resp := &pb.ChunkDocumentResponse{

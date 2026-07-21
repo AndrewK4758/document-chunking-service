@@ -68,7 +68,7 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		RawFileBytes:     zipBytes,
-		RelativeFilePath: "test.zip",
+		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "test.zip"},
 	})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -101,7 +101,7 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 
 	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
-	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{RelativeFilePath: "bad.zip"})
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "bad.zip"}})
 	if err == nil {
 		t.Fatal("Expected error for invalid zip, got nil")
 	}
@@ -122,7 +122,7 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		RawFileBytes:     zipBytes,
-		RelativeFilePath: "slip.zip",
+		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "slip.zip"},
 	})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -141,7 +141,7 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
 		RawFileBytes:     []byte("dummy"),
-		RelativeFilePath: "dummy.zip",
+		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "dummy.zip"},
 	})
 	if err == nil {
 		t.Fatal("Expected error due to context cancellation, got nil")
@@ -158,7 +158,7 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-		RelativeFilePath: "missing_from_storage.zip",
+		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "missing_from_storage.zip"},
 	})
 
 	if err == nil {

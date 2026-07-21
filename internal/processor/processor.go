@@ -48,12 +48,12 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	if len(req.RawFileBytes) > 0 {
 		addTrace("Using raw file bytes from request", "INFO")
 		zipBytes = req.RawFileBytes
-	} else if req.RelativeFilePath != "" {
-		addTrace(fmt.Sprintf("Fetching %s from store", req.RelativeFilePath), "INFO")
+	} else if req.DocumentChunking != nil && req.DocumentChunking.DocumentStorageUri != "" {
+		addTrace(fmt.Sprintf("Fetching %s from store", req.DocumentChunking.DocumentStorageUri), "INFO")
 		if p.Store == nil {
 			return nil, traceEvents, fmt.Errorf("storage manager is not configured")
 		}
-		zipBytes, err = p.Store.FetchFile(ctx, req.RelativeFilePath, req.Identity)
+		zipBytes, err = p.Store.FetchFile(ctx, req.DocumentChunking.DocumentStorageUri, req.Identity)
 		if err != nil {
 			addTrace(fmt.Sprintf("Failed to fetch file: %v", err), "ERROR")
 			return nil, traceEvents, fmt.Errorf("failed to fetch from store: %w", err)
@@ -70,8 +70,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 	// Determine original filename to preserve extension
 	originalFilename := "input.pdf"
-	if req.RelativeFilePath != "" {
-		originalFilename = filepath.Base(req.RelativeFilePath)
+	if req.DocumentChunking != nil && req.DocumentChunking.DocumentStorageUri != "" {
+		originalFilename = filepath.Base(req.DocumentChunking.DocumentStorageUri)
 	}
 
 	tempInputPath := filepath.Join(extractDir, originalFilename)

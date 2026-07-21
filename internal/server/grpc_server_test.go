@@ -89,7 +89,7 @@ func TestChunkDocument_Failure(t *testing.T) {
 
 	req := &pb.ChunkDocumentRequest{
 		Identity:         &pb.InfrastructureIdentity{JobId: "job_bad"},
-		RelativeFilePath: "nonexistent/path/to/bad.zip",
+		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "nonexistent/path/to/bad.zip"},
 	}
 
 	mockStream := &mockChunkDocumentServer{req: req}
