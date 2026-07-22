@@ -6,15 +6,19 @@ import (
 	"net"
 	"os"
 
+	"github.com/AndrewK4758/shared_utils/logger"
+
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
 
 	"document_processing_service/internal/server"
 	"document_processing_service/internal/storage"
+
 	pb "github.com/AndrewK4758/shared_protos"
 )
 
 func main() {
+	logger.InitLogger()
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables")
 	}
