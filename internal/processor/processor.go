@@ -101,8 +101,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	for _, pdfPath := range extractedFiles {
 		// 1. Validate PDF and get page count
 		docTypeCorrupted := "Corrupted_Or_Encrypted_Document"
-		if req.OriginalRequest != nil && req.OriginalRequest.Metadata != nil && req.OriginalRequest.Metadata["doc_type_corrupted"] != "" {
-			docTypeCorrupted = req.OriginalRequest.Metadata["doc_type_corrupted"]
+		if req.DocumentChunking != nil && req.DocumentChunking.DocTypeCorrupted != "" {
+			docTypeCorrupted = req.DocumentChunking.DocTypeCorrupted
 		}
 
 		if err := api.ValidateFile(pdfPath, model.NewDefaultConfiguration()); err != nil {
@@ -147,8 +147,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			}
 
 			actionName := "ClassifyDocument"
-			if req.OriginalRequest != nil && req.OriginalRequest.Metadata != nil && req.OriginalRequest.Metadata["action_name_classify"] != "" {
-				actionName = req.OriginalRequest.Metadata["action_name_classify"]
+			if req.DocumentChunking != nil && req.DocumentChunking.ActionNameClassify != "" {
+				actionName = req.DocumentChunking.ActionNameClassify
 			}
 
 			if p.AiClient != nil && req.OriginalRequest != nil {
@@ -198,8 +198,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			}
 
 			docTypeClassified := "Classified_Document"
-			if req.OriginalRequest != nil && req.OriginalRequest.Metadata != nil && req.OriginalRequest.Metadata["doc_type_classified"] != "" {
-				docTypeClassified = req.OriginalRequest.Metadata["doc_type_classified"]
+			if req.DocumentChunking != nil && req.DocumentChunking.DocTypeClassified != "" {
+				docTypeClassified = req.DocumentChunking.DocTypeClassified
 			}
 
 			processedDocs = append(processedDocs, &pb.ProcessedDocument{
@@ -247,13 +247,13 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 					}
 
 					prompt := "Analyze this document slice. Does a NEW document boundary begin somewhere within these pages? A document boundary is typically a new header, title page, or completely different formatting indicating a new file. Return a JSON object: {\"boundary_page_in_slice\": 3} where 3 is the page number (relative to this slice) the new document starts. If it is all one continuous document, return {\"boundary_page_in_slice\": 0}."
-					if req.OriginalRequest.Metadata != nil && req.OriginalRequest.Metadata["boundary_detection_prompt"] != "" {
-						prompt = req.OriginalRequest.Metadata["boundary_detection_prompt"]
+					if req.DocumentChunking != nil && req.DocumentChunking.BoundaryDetectionPrompt != "" {
+						prompt = req.DocumentChunking.BoundaryDetectionPrompt
 					}
 
 					actionName := "InternalBoundaryDetection"
-					if req.OriginalRequest.Metadata != nil && req.OriginalRequest.Metadata["action_name_boundary"] != "" {
-						actionName = req.OriginalRequest.Metadata["action_name_boundary"]
+					if req.DocumentChunking != nil && req.DocumentChunking.ActionNameBoundary != "" {
+						actionName = req.DocumentChunking.ActionNameBoundary
 					}
 
 					actionDef := &pb.ActionDefinition{
@@ -292,8 +292,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				os.Remove(sliceTempPath)
 
 				docTypeChunked := "Chunked_Document"
-				if req.OriginalRequest != nil && req.OriginalRequest.Metadata != nil && req.OriginalRequest.Metadata["doc_type_chunked"] != "" {
-					docTypeChunked = req.OriginalRequest.Metadata["doc_type_chunked"]
+				if req.DocumentChunking != nil && req.DocumentChunking.DocTypeChunked != "" {
+					docTypeChunked = req.DocumentChunking.DocTypeChunked
 				}
 
 				if boundaryPageInSlice > 0 {
@@ -340,8 +340,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			// Handle EOF trailing document
 			if currentDocStart <= pageCount {
 				docTypeChunked := "Chunked_Document"
-				if req.OriginalRequest != nil && req.OriginalRequest.Metadata != nil && req.OriginalRequest.Metadata["doc_type_chunked"] != "" {
-					docTypeChunked = req.OriginalRequest.Metadata["doc_type_chunked"]
+				if req.DocumentChunking != nil && req.DocumentChunking.DocTypeChunked != "" {
+					docTypeChunked = req.DocumentChunking.DocTypeChunked
 				}
 
 				chunkPath := filepath.Join(extractDir, fmt.Sprintf("chunk_%d_%d.pdf", currentDocStart, pageCount))

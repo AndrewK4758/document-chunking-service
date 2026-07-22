@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"net"
 	"os"
 
@@ -20,7 +19,7 @@ import (
 func main() {
 	logger.InitLogger()
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
+		logger.Info("DocProcessor", "%v", "No .env file found, using environment variables")
 	}
 
 	port := os.Getenv("GRPC_PORT")
@@ -30,7 +29,7 @@ func main() {
 
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		logger.Fatal("DocProcessor", "failed to listen: %v", err)
 	}
 
 	s := grpc.NewServer()
@@ -43,7 +42,7 @@ func main() {
 
 	aiConn, err := grpc.Dial(aiServiceUrl, grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("failed to dial ai_service: %v", err)
+		logger.Fatal("DocProcessor", "failed to dial ai_service: %v", err)
 	}
 	defer aiConn.Close()
 
@@ -58,9 +57,9 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Printf("Warning: failed to query AI service for available models: %v", err)
+		logger.Info("DocProcessor", "Warning: failed to query AI service for available models: %v", err)
 	} else {
-		log.Printf("AI Service Models Loaded - Text: %v, OCR: %v", modelsResp.TextModels, modelsResp.OcrModels)
+		logger.Info("DocProcessor", "AI Service Models Loaded - Text: %v, OCR: %v", modelsResp.TextModels, modelsResp.OcrModels)
 	}
 
 	// Initialize Storage Gateway Client
@@ -70,7 +69,7 @@ func main() {
 	}
 	gatewayConn, err := grpc.Dial(gatewayAddr, grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("failed to dial storage_gateway: %v", err)
+		logger.Fatal("DocProcessor", "failed to dial storage_gateway: %v", err)
 	}
 	defer gatewayConn.Close()
 
@@ -80,8 +79,8 @@ func main() {
 	docServer := server.NewDocumentProcessingServer(aiClient, store)
 	pb.RegisterDocumentProcessingServiceServer(s, docServer)
 
-	log.Printf("Document Processing Service listening on %v", lis.Addr())
+	logger.Info("DocProcessor", "Document Processing Service listening on %v", lis.Addr())
 	if err := s.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+		logger.Fatal("DocProcessor", "failed to serve: %v", err)
 	}
 }

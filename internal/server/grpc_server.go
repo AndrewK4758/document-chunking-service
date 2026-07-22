@@ -3,12 +3,12 @@ package server
 import (
 	"fmt"
 	"io"
-	"log"
 
 	"document_processing_service/internal/processor"
 	"document_processing_service/internal/storage"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"github.com/AndrewK4758/shared_utils/logger"
 )
 
 type DocumentProcessingServer struct {
@@ -36,7 +36,7 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 		if req.DocumentChunking != nil {
 			docUri = req.DocumentChunking.DocumentStorageUri
 		}
-		log.Printf("Received ChunkDocument request for JobID: %s, DocumentStorageUri: %s", req.Identity.JobId, docUri)
+		logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentStorageUri: %s", req.Identity.JobId, docUri)
 
 		docs, traceEvents, err := s.chunker.ProcessZipFile(stream.Context(), req)
 		resp := &pb.ChunkDocumentResponse{
@@ -44,11 +44,11 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 		}
 
 		if err != nil {
-			log.Printf("Error processing zip file for JobID %s: %v", req.Identity.JobId, err)
+			logger.Info("DocProcessor", "Error processing zip file for JobID %s: %v", req.Identity.JobId, err)
 			resp.Success = false
 			resp.ErrorMessage = err.Error()
 		} else {
-			log.Printf("Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.JobId, len(docs))
+			logger.Info("DocProcessor", "Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.JobId, len(docs))
 			resp.Success = true
 			resp.ProcessedDocuments = docs
 		}
