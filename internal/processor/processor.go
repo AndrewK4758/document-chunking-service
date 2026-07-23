@@ -99,8 +99,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	var processedDocs []*pb.ProcessedDocument
 
 	for _, pdfPath := range extractedFiles {
-		// 1. Validate PDF and get page count
-		docTypeCorrupted := "Corrupted_Or_Encrypted_Document"
+		var docTypeCorrupted string
 		if req.DocumentChunking != nil && req.DocumentChunking.DocTypeCorrupted != "" {
 			docTypeCorrupted = req.DocumentChunking.DocTypeCorrupted
 		}
@@ -146,7 +145,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				return nil, traceEvents, fmt.Errorf("failed to read pdf file: %w", err)
 			}
 
-			actionName := "ClassifyDocument"
+			var actionName string
 			if req.DocumentChunking != nil && req.DocumentChunking.ActionNameClassify != "" {
 				actionName = req.DocumentChunking.ActionNameClassify
 			}
@@ -197,7 +196,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				}
 			}
 
-			docTypeClassified := "Classified_Document"
+			var docTypeClassified string
 			if req.DocumentChunking != nil && req.DocumentChunking.DocTypeClassified != "" {
 				docTypeClassified = req.DocumentChunking.DocTypeClassified
 			}
@@ -251,7 +250,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 						prompt = req.DocumentChunking.BoundaryDetectionPrompt
 					}
 
-					actionName := "InternalBoundaryDetection"
+					var actionName string
 					if req.DocumentChunking != nil && req.DocumentChunking.ActionNameBoundary != "" {
 						actionName = req.DocumentChunking.ActionNameBoundary
 					}
@@ -291,7 +290,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 				os.Remove(sliceTempPath)
 
-				docTypeChunked := "Chunked_Document"
+				var docTypeChunked string
 				if req.DocumentChunking != nil && req.DocumentChunking.DocTypeChunked != "" {
 					docTypeChunked = req.DocumentChunking.DocTypeChunked
 				}
@@ -339,7 +338,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 			// Handle EOF trailing document
 			if currentDocStart <= pageCount {
-				docTypeChunked := "Chunked_Document"
+				var docTypeChunked string
 				if req.DocumentChunking != nil && req.DocumentChunking.DocTypeChunked != "" {
 					docTypeChunked = req.DocumentChunking.DocTypeChunked
 				}

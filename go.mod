@@ -1,6 +1,6 @@
 module document_processing_service
 
-go 1.26.4
+go 1.23.0
 
 require (
 	github.com/AndrewK4758/shared_protos v0.0.0-20260717031111-875804e35fbb

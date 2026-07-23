@@ -8,6 +8,8 @@ import (
 	"github.com/AndrewK4758/shared_utils/logger"
 
 	"github.com/joho/godotenv"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/grpc"
 
 	"document_processing_service/internal/server"
@@ -74,6 +76,32 @@ func main() {
 	defer gatewayConn.Close()
 
 	store := storage.NewGatewayStorage(pb.NewStorageGatewayServiceClient(gatewayConn))
+
+	// Initialize NATS
+	natsURL := os.Getenv("NATS_URL")
+	if natsURL == "" {
+		natsURL = "nats://localhost:4222"
+	}
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		logger.Fatal("DocProcessor", "failed to connect to NATS: %v", err)
+	}
+	defer nc.Close()
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		logger.Fatal("DocProcessor", "failed to init JetStream: %v", err)
+	}
+
+	natsServer := server.NewNatsServer(nc, js, aiClient, store)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		if err := natsServer.Start(ctx); err != nil {
+			logger.Fatal("DocProcessor", "NATS Server failed: %v", err)
+		}
+	}()
 
 	// Register the DocumentProcessingService
 	docServer := server.NewDocumentProcessingServer(aiClient, store)
