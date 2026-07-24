@@ -115,38 +115,59 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	chunkReq := &pb.ChunkDocumentRequest{
-		Identity: req.Identity,
-		StepId:   req.StepId,
-		DocumentChunking: &pb.DocumentChunkingContract{
-			DocumentStorageUri: docUri,
-		},
-		OriginalRequest: &req,
-	}
+	var resp *pb.PerformActionResponse
 
-	docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
-	
-	resp := &pb.PerformActionResponse{
-		Success: err == nil,
-	}
-
-	if err != nil {
-		logger.Info("DocProcessor", "Error processing zip file for JobID %s: %v", req.Identity.GetJobId(), err)
-		resp.IsTransientError = true
-		resp.ErrorContract = &pb.ErrorContract{
-			Code:    "DOCUMENT_PROCESSING_FAILED",
-			Source:  "document_processing_service",
-			Message: err.Error(),
+	if msg.Subject() == "worker.doc.blanking" {
+		blankUri, err := s.chunker.GenerateBlankDocument(ctx, docUri, req.Identity)
+		resp = &pb.PerformActionResponse{
+			Success: err == nil,
+		}
+		if err != nil {
+			logger.Info("DocProcessor", "Error generating blank document for JobID %s: %v", req.Identity.GetJobId(), err)
+			resp.IsTransientError = true
+			resp.ErrorContract = &pb.ErrorContract{
+				Code:    "BLANKING_FAILED",
+				Source:  "document_processing_service",
+				Message: err.Error(),
+			}
+		} else {
+			logger.Info("DocProcessor", "Successfully generated blank document for JobID %s", req.Identity.GetJobId())
+			resp.ActionResultJson = fmt.Sprintf(`{"blank_document_uri": "%s"}`, blankUri)
 		}
 	} else {
-		logger.Info("DocProcessor", "Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.GetJobId(), len(docs))
-		jsonBytes, err := json.Marshal(docs)
-		if err != nil {
-			logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", err)
-			msg.NakWithDelay(5 * time.Second)
-			return
+		chunkReq := &pb.ChunkDocumentRequest{
+			Identity: req.Identity,
+			StepId:   req.StepId,
+			DocumentChunking: &pb.DocumentChunkingContract{
+				DocumentStorageUri: docUri,
+			},
+			OriginalRequest: &req,
 		}
-		resp.ActionResultJson = string(jsonBytes)
+
+		docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
+		
+		resp = &pb.PerformActionResponse{
+			Success: err == nil,
+		}
+
+		if err != nil {
+			logger.Info("DocProcessor", "Error processing zip file for JobID %s: %v", req.Identity.GetJobId(), err)
+			resp.IsTransientError = true
+			resp.ErrorContract = &pb.ErrorContract{
+				Code:    "DOCUMENT_PROCESSING_FAILED",
+				Source:  "document_processing_service",
+				Message: err.Error(),
+			}
+		} else {
+			logger.Info("DocProcessor", "Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.GetJobId(), len(docs))
+			jsonBytes, err := json.Marshal(docs)
+			if err != nil {
+				logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", err)
+				msg.NakWithDelay(5 * time.Second)
+				return
+			}
+			resp.ActionResultJson = string(jsonBytes)
+		}
 	}
 
 	if replySubj != "" {

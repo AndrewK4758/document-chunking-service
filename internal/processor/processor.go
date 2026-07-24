@@ -373,4 +373,24 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	return processedDocs, traceEvents, nil
 }
 
-// End of file
+func (p *ChunkingProcessor) GenerateBlankDocument(ctx context.Context, docUri string, identity *pb.InfrastructureIdentity) (string, error) {
+	if p.Store == nil {
+		return "", fmt.Errorf("storage manager is not configured")
+	}
+
+	pdfBytes, err := p.Store.FetchFile(ctx, docUri, identity)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch from store: %w", err)
+	}
+
+	// [MOCK] In a real implementation, we would shell out to Ghostscript or ImageMagick
+	// to strip all text rendering streams and produce a purely visual 'blank' layout PDF.
+	// We simulate this for now by uploading the original bytes with a 'blanked_' prefix.
+	blankedFileName := fmt.Sprintf("blanked_%d.pdf", time.Now().UnixNano())
+	blankUri, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", identity.GetJobId(), blankedFileName), identity, pdfBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to save blank document to store: %w", err)
+	}
+
+	return blankUri, nil
+}
