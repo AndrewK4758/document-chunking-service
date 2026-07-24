@@ -1,6 +1,6 @@
 module document_processing_service
 
-go 1.23.0
+go 1.26.4
 
 require (
 	github.com/AndrewK4758/shared_protos v0.0.0-20260717031111-875804e35fbb
@@ -8,8 +8,10 @@ require (
 	github.com/bodgit/sevenzip v1.6.5
 	github.com/joho/godotenv v1.5.1
 	github.com/mholt/archiver/v3 v3.5.1
+	github.com/nats-io/nats.go v1.52.0
 	github.com/pdfcpu/pdfcpu v0.13.0
 	google.golang.org/grpc v1.82.1
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -28,6 +30,8 @@ require (
 	github.com/klauspost/pgzip v1.2.5 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect
+	github.com/nats-io/nkeys v0.4.15 // indirect
+	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/nwaples/rardecode v1.1.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -45,7 +49,6 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260720211330-0afa2a65878a // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

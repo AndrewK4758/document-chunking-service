@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/AndrewK4758/shared_utils/envutil"
+	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -15,6 +17,7 @@ import (
 
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/logger"
+	"github.com/AndrewK4758/shared_utils/natsutil"
 )
 
 type NatsServer struct {
@@ -36,7 +39,7 @@ func (s *NatsServer) Start(ctx context.Context) error {
 
 	var cons jetstream.Consumer
 	var err error
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 90; i++ {
 		cons, err = s.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 			Durable:        "doc_processor_workers",
 			AckPolicy:      jetstream.AckExplicitPolicy,
@@ -68,14 +71,49 @@ func (s *NatsServer) Start(ctx context.Context) error {
 }
 
 func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
+	startTime := time.Now()
+	meta, _ := msg.Metadata()
+	var attempt uint64 = 1
+	if meta != nil {
+		attempt = meta.NumDelivered
+	}
+
 	logger.Info("DocProcessor", "Received document processing request on subject: %s", msg.Subject())
 
 	var req pb.ExecuteWorkflowNodeRequest
 	if err := proto.Unmarshal(msg.Data(), &req); err != nil {
 		logger.Info("DocProcessor", "Failed to unmarshal ExecuteWorkflowNodeRequest: %v", err)
+		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+			Component:  "DocProcessor",
+			Event:      "NACKED",
+			Stream:     "WORKERS",
+			Subject:    msg.Subject(),
+			Consumer:   "doc_processor_workers",
+			TenantID:   "default",
+			AppID:      "default",
+			JobID:      "default",
+			Attempt:    attempt,
+			DurationMs: time.Since(startTime).Milliseconds(),
+			Error:      err,
+		})
 		msg.NakWithDelay(5 * time.Second)
 		return
 	}
+
+	t, a, j := natsutil.ExtractIdentity(req.Identity)
+
+	natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+		Component: "DocProcessor",
+		Event:     "DEQUEUED",
+		Stream:    "WORKERS",
+		Subject:   msg.Subject(),
+		Consumer:  "doc_processor_workers",
+		TenantID:  t,
+		AppID:     a,
+		JobID:     j,
+		SizeBytes: len(msg.Data()),
+		Attempt:   attempt,
+	})
 
 	var replySubj string
 	if headers := msg.Headers(); headers != nil {
@@ -91,7 +129,19 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		for {
 			select {
 			case <-ticker.C:
-				msg.InProgress()
+				if err := msg.InProgress(); err == nil {
+					natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+						Component: "DocProcessor",
+						Event:     "IN_PROGRESS",
+						Stream:    "WORKERS",
+						Subject:   msg.Subject(),
+						Consumer:  "doc_processor_workers",
+						TenantID:  t,
+						AppID:     a,
+						JobID:     j,
+						Attempt:   attempt,
+					})
+				}
 			case <-done:
 				return
 			case <-ctx.Done():
@@ -101,93 +151,182 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	}()
 
 	var docUri string
-	if req.GlobalState != nil && req.GlobalState.Fields != nil {
-		if uriVal, ok := req.GlobalState.Fields["DocumentStorageUri"]; ok && uriVal.GetStringValue() != "" {
-			docUri = uriVal.GetStringValue()
-		} else if pathVal, ok := req.GlobalState.Fields["DocumentPath"]; ok && pathVal.GetStringValue() != "" {
-			docUri = pathVal.GetStringValue()
-		}
+	if req.StorageServiceContract != nil {
+		docUri = req.StorageServiceContract.DocumentStorageUri
 	}
 
 	if docUri == "" {
-		logger.Info("DocProcessor", "No DocumentStorageUri or DocumentPath found in global state")
-		msg.NakWithDelay(5 * time.Second)
+		logger.Info("DocProcessor", "StorageServiceContract not provided or DocumentStorageUri is empty")
+
+		if replySubj != "" {
+			resp := &pb.PerformActionResponse{
+				Success: false,
+				ErrorContract: &pb.ErrorContract{
+					Code:    "MISSING_DOCUMENT_URI",
+					Source:  "document_processing_service",
+					Message: "GlobalState must contain DocumentStorageUri or DocumentPath",
+				},
+			}
+			respBytes, err := proto.Marshal(resp)
+			if err != nil {
+				logger.Warn("DocProcessor", "Failed to marshal error response: %v", err)
+			} else {
+				_, pubErr := s.js.Publish(ctx, replySubj, respBytes)
+				natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+					Component: "DocProcessor",
+					Event:     "ENQUEUED",
+					Stream:    "ORCHESTRATOR_RESPONSES",
+					Subject:   replySubj,
+					TenantID:  t,
+					AppID:     a,
+					JobID:     j,
+					SizeBytes: len(respBytes),
+					Error:     pubErr,
+				})
+			}
+		}
+
+		durationMs := time.Since(startTime).Milliseconds()
+		if err := msg.Ack(); err == nil {
+			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+				Component:  "DocProcessor",
+				Event:      "ACKNOWLEDGED",
+				Stream:     "WORKERS",
+				Subject:    msg.Subject(),
+				Consumer:   "doc_processor_workers",
+				TenantID:   t,
+				AppID:      a,
+				JobID:      j,
+				Attempt:    attempt,
+				DurationMs: durationMs,
+			})
+		}
 		return
 	}
 
 	var resp *pb.PerformActionResponse
 
-	if msg.Subject() == "worker.doc.blanking" {
-		blankUri, err := s.chunker.GenerateBlankDocument(ctx, docUri, req.Identity)
-		resp = &pb.PerformActionResponse{
-			Success: err == nil,
-		}
-		if err != nil {
-			logger.Info("DocProcessor", "Error generating blank document for JobID %s: %v", req.Identity.GetJobId(), err)
-			resp.IsTransientError = true
-			resp.ErrorContract = &pb.ErrorContract{
-				Code:    "BLANKING_FAILED",
-				Source:  "document_processing_service",
-				Message: err.Error(),
-			}
-		} else {
-			logger.Info("DocProcessor", "Successfully generated blank document for JobID %s", req.Identity.GetJobId())
-			resp.ActionResultJson = fmt.Sprintf(`{"blank_document_uri": "%s"}`, blankUri)
+	chunkReq := &pb.ChunkDocumentRequest{
+		Identity: req.Identity,
+		StepId:   req.StepId,
+		DocumentChunking: &pb.DocumentChunkingContract{
+			DocumentStorageUri: docUri,
+		},
+		OriginalRequest: &req,
+	}
+
+	docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
+
+	resp = &pb.PerformActionResponse{
+		Success: err == nil,
+	}
+
+	if err != nil {
+		logger.Info("DocProcessor", "Error processing document for JobID %s: %v", req.Identity.GetJobId(), err)
+		resp.IsTransientError = true
+		resp.ErrorContract = &pb.ErrorContract{
+			Code:    "DOCUMENT_PROCESSING_FAILED",
+			Source:  "document_processing_service",
+			Message: err.Error(),
 		}
 	} else {
-		chunkReq := &pb.ChunkDocumentRequest{
-			Identity: req.Identity,
-			StepId:   req.StepId,
-			DocumentChunking: &pb.DocumentChunkingContract{
-				DocumentStorageUri: docUri,
-			},
-			OriginalRequest: &req,
-		}
-
-		docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
-		
-		resp = &pb.PerformActionResponse{
-			Success: err == nil,
-		}
-
+		logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", req.Identity.GetJobId(), len(docs))
+		jsonBytes, err := json.Marshal(docs)
 		if err != nil {
-			logger.Info("DocProcessor", "Error processing zip file for JobID %s: %v", req.Identity.GetJobId(), err)
-			resp.IsTransientError = true
-			resp.ErrorContract = &pb.ErrorContract{
-				Code:    "DOCUMENT_PROCESSING_FAILED",
-				Source:  "document_processing_service",
-				Message: err.Error(),
+			logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", err)
+			nackTimeoutJsonStr := envutil.GetStringOrDefault("NACK_JSON_TIMEOUT", "")
+			nackTimeoutJson, errParse := strconv.Atoi(nackTimeoutJsonStr)
+			if errParse != nil {
+				nackTimeoutJson = 5
 			}
-		} else {
-			logger.Info("DocProcessor", "Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.GetJobId(), len(docs))
-			jsonBytes, err := json.Marshal(docs)
-			if err != nil {
-				logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", err)
-				msg.NakWithDelay(5 * time.Second)
-				return
-			}
-			resp.ActionResultJson = string(jsonBytes)
+			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+				Component:  "DocProcessor",
+				Event:      "NACKED",
+				Stream:     "WORKERS",
+				Subject:    msg.Subject(),
+				Consumer:   "doc_processor_workers",
+				TenantID:   t,
+				AppID:      a,
+				JobID:      j,
+				Attempt:    attempt,
+				DurationMs: time.Since(startTime).Milliseconds(),
+				Error:      err,
+			})
+			msg.NakWithDelay(time.Duration(nackTimeoutJson) * time.Second)
+			return
 		}
+		resp.ActionResultJson = string(jsonBytes)
 	}
 
 	if replySubj != "" {
 		respBytes, err := proto.Marshal(resp)
 		if err != nil {
 			logger.Info("DocProcessor", "Failed to marshal response: %v", err)
+			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+				Component:  "DocProcessor",
+				Event:      "NACKED",
+				Stream:     "WORKERS",
+				Subject:    msg.Subject(),
+				Consumer:   "doc_processor_workers",
+				TenantID:   t,
+				AppID:      a,
+				JobID:      j,
+				Attempt:    attempt,
+				DurationMs: time.Since(startTime).Milliseconds(),
+				Error:      err,
+			})
 			msg.NakWithDelay(5 * time.Second)
 			return
 		}
 
-		if _, err := s.js.Publish(ctx, replySubj, respBytes); err != nil {
-			logger.Info("DocProcessor", "Failed to publish reply to NATS %s: %v", replySubj, err)
+		_, pubErr := s.js.Publish(ctx, replySubj, respBytes)
+		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+			Component: "DocProcessor",
+			Event:     "ENQUEUED",
+			Stream:    "ORCHESTRATOR_RESPONSES",
+			Subject:   replySubj,
+			TenantID:  t,
+			AppID:     a,
+			JobID:     j,
+			SizeBytes: len(respBytes),
+			Error:     pubErr,
+		})
+		if pubErr != nil {
+			logger.Info("DocProcessor", "Failed to publish reply to NATS %s: %v", replySubj, pubErr)
+			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+				Component:  "DocProcessor",
+				Event:      "NACKED",
+				Stream:     "WORKERS",
+				Subject:    msg.Subject(),
+				Consumer:   "doc_processor_workers",
+				TenantID:   t,
+				AppID:      a,
+				JobID:      j,
+				Attempt:    attempt,
+				DurationMs: time.Since(startTime).Milliseconds(),
+				Error:      pubErr,
+			})
 			msg.NakWithDelay(5 * time.Second)
 			return
 		}
 	}
 
+	durationMs := time.Since(startTime).Milliseconds()
 	if err := msg.Ack(); err != nil {
 		logger.Info("DocProcessor", "Failed to ack msg: %v", err)
 	} else {
 		logger.Info("DocProcessor", "Successfully acknowledged processing request and replied to %s", replySubj)
+		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+			Component:  "DocProcessor",
+			Event:      "ACKNOWLEDGED",
+			Stream:     "WORKERS",
+			Subject:    msg.Subject(),
+			Consumer:   "doc_processor_workers",
+			TenantID:   t,
+			AppID:      a,
+			JobID:      j,
+			Attempt:    attempt,
+			DurationMs: durationMs,
+		})
 	}
 }

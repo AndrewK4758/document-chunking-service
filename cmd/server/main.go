@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"net"
-	"os"
+
+	"github.com/AndrewK4758/shared_utils/envutil"
 
 	"github.com/AndrewK4758/shared_utils/logger"
+	"github.com/AndrewK4758/shared_utils/natsutil"
 
-	"github.com/joho/godotenv"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/grpc"
 
@@ -20,11 +20,9 @@ import (
 
 func main() {
 	logger.InitLogger()
-	if err := godotenv.Load(); err != nil {
-		logger.Info("DocProcessor", "%v", "No .env file found, using environment variables")
-	}
+	envutil.LoadEnv(".env", "document_processing_service/.env", "../.env", "../../.env")
 
-	port := os.Getenv("GRPC_PORT")
+	port := envutil.GetStringOrDefault("GRPC_PORT", "")
 	if port == "" {
 		port = "50054" // Default port for document_processing_service
 	}
@@ -37,7 +35,7 @@ func main() {
 	s := grpc.NewServer()
 
 	// Dial AI Service
-	aiServiceUrl := os.Getenv("AI_SERVICE_URL")
+	aiServiceUrl := envutil.GetStringOrDefault("AI_SERVICE_URL", "")
 	if aiServiceUrl == "" {
 		aiServiceUrl = "localhost:50051" // Default AI Service URL
 	}
@@ -65,7 +63,7 @@ func main() {
 	}
 
 	// Initialize Storage Gateway Client
-	gatewayAddr := os.Getenv("STORAGE_GATEWAY_ADDR")
+	gatewayAddr := envutil.GetStringOrDefault("STORAGE_GATEWAY_ADDR", "")
 	if gatewayAddr == "" {
 		gatewayAddr = "localhost:50058"
 	}
@@ -78,11 +76,11 @@ func main() {
 	store := storage.NewGatewayStorage(pb.NewStorageGatewayServiceClient(gatewayConn))
 
 	// Initialize NATS
-	natsURL := os.Getenv("NATS_URL")
+	natsURL := envutil.GetStringOrDefault("NATS_URL", "")
 	if natsURL == "" {
 		natsURL = "nats://localhost:4222"
 	}
-	nc, err := nats.Connect(natsURL)
+	nc, err := natsutil.ConnectWithRetries(natsURL, "DocProcessor")
 	if err != nil {
 		logger.Fatal("DocProcessor", "failed to connect to NATS: %v", err)
 	}

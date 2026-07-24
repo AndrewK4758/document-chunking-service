@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/AndrewK4758/shared_utils/envutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -90,7 +91,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 	addTrace(fmt.Sprintf("Extracted %d documents", len(extractedFiles)), "INFO")
 
-	maxPagesEnv := os.Getenv("MAX_PAGES_BEFORE_SPLIT")
+	maxPagesEnv := envutil.GetStringOrDefault("MAX_PAGES_BEFORE_SPLIT", "")
 	maxPagesBeforeSplit := 20
 	if val, err := strconv.Atoi(maxPagesEnv); err == nil && val > 0 {
 		maxPagesBeforeSplit = val
@@ -211,7 +212,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			addTrace(fmt.Sprintf("%s exceeds max pages (%d), engaging sliding window splitter...", filepath.Base(pdfPath), maxPagesBeforeSplit), "INFO")
 
 			slidingWindowSize := 5
-			if val, err := strconv.Atoi(os.Getenv("SLIDING_WINDOW_SIZE")); err == nil && val > 0 {
+			if val, err := strconv.Atoi(envutil.GetStringOrDefault("SLIDING_WINDOW_SIZE", "")); err == nil && val > 0 {
 				slidingWindowSize = val
 			}
 
@@ -371,26 +372,4 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	}
 
 	return processedDocs, traceEvents, nil
-}
-
-func (p *ChunkingProcessor) GenerateBlankDocument(ctx context.Context, docUri string, identity *pb.InfrastructureIdentity) (string, error) {
-	if p.Store == nil {
-		return "", fmt.Errorf("storage manager is not configured")
-	}
-
-	pdfBytes, err := p.Store.FetchFile(ctx, docUri, identity)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch from store: %w", err)
-	}
-
-	// [MOCK] In a real implementation, we would shell out to Ghostscript or ImageMagick
-	// to strip all text rendering streams and produce a purely visual 'blank' layout PDF.
-	// We simulate this for now by uploading the original bytes with a 'blanked_' prefix.
-	blankedFileName := fmt.Sprintf("blanked_%d.pdf", time.Now().UnixNano())
-	blankUri, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", identity.GetJobId(), blankedFileName), identity, pdfBytes)
-	if err != nil {
-		return "", fmt.Errorf("failed to save blank document to store: %w", err)
-	}
-
-	return blankUri, nil
 }
