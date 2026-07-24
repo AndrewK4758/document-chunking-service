@@ -19,8 +19,8 @@ import (
 )
 
 func main() {
-	logger.InitLogger()
 	envutil.LoadEnv(".env", "document_processing_service/.env", "../.env", "../../.env")
+	logger.InitLogger()
 
 	port := envutil.GetStringOrDefault("GRPC_PORT", "")
 	if port == "" {
