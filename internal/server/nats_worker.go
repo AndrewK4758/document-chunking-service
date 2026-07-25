@@ -85,7 +85,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		logger.Info("DocProcessor", "Failed to unmarshal ExecuteWorkflowNodeRequest: %v", err)
 		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 			Component:  "DocProcessor",
-			Event:      "NACKED",
+			Event:      "TERMINATED",
 			Stream:     "WORKERS",
 			Subject:    msg.Subject(),
 			Consumer:   "doc_processor_workers",
@@ -96,7 +96,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 			DurationMs: time.Since(startTime).Milliseconds(),
 			Error:      err,
 		})
-		msg.NakWithDelay(5 * time.Second)
+		msg.Term()
 		return
 	}
 
