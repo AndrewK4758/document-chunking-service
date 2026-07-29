@@ -7,16 +7,20 @@ import (
 	"github.com/AndrewK4758/shared_utils/envutil"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"document_processing_service/internal/archive"
 	"document_processing_service/internal/storage"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"github.com/AndrewK4758/shared_utils/workflowparser"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
+
+type BoundaryDetectionResponse struct {
+	BoundaryPageInSlice int `json:"boundary_page_in_slice"`
+}
 
 type ChunkingProcessor struct {
 	AiClient pb.DocumentProcessorClient
@@ -46,15 +50,18 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 	var zipBytes []byte
 	var err error
+
+	parser := workflowparser.NewNodeRequestParser(req.GetOriginalRequest())
+
 	if len(req.RawFileBytes) > 0 {
 		addTrace("Using raw file bytes from request", "INFO")
 		zipBytes = req.RawFileBytes
-	} else if req.DocumentChunking != nil && req.DocumentChunking.DocumentStorageUri != "" {
-		addTrace(fmt.Sprintf("Fetching %s from store", req.DocumentChunking.DocumentStorageUri), "INFO")
+	} else if parser.GetDocumentUri() != "" {
+		addTrace(fmt.Sprintf("Fetching %s from store", parser.GetDocumentUri()), "INFO")
 		if p.Store == nil {
 			return nil, traceEvents, fmt.Errorf("storage manager is not configured")
 		}
-		zipBytes, err = p.Store.FetchFile(ctx, req.DocumentChunking.DocumentStorageUri, req.Identity)
+		zipBytes, err = p.Store.FetchFile(ctx, parser.GetDocumentUri(), req.Identity)
 		if err != nil {
 			addTrace(fmt.Sprintf("Failed to fetch file: %v", err), "ERROR")
 			return nil, traceEvents, fmt.Errorf("failed to fetch from store: %w", err)
@@ -67,12 +74,16 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	if err := os.MkdirAll(extractDir, 0755); err != nil {
 		return nil, traceEvents, fmt.Errorf("failed to create extraction directory: %w", err)
 	}
-	defer os.RemoveAll(extractDir)
+	defer func(path string) {
+		err := os.RemoveAll(path)
+		if err != nil {
 
-	// Determine original filename to preserve extension
+		}
+	}(extractDir)
+
 	originalFilename := "input.pdf"
-	if req.DocumentChunking != nil && req.DocumentChunking.DocumentStorageUri != "" {
-		originalFilename = filepath.Base(req.DocumentChunking.DocumentStorageUri)
+	if parser.GetDocumentUri() != "" {
+		originalFilename = filepath.Base(parser.GetDocumentUri())
 	}
 
 	tempInputPath := filepath.Join(extractDir, originalFilename)
@@ -91,18 +102,14 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 	addTrace(fmt.Sprintf("Extracted %d documents", len(extractedFiles)), "INFO")
 
-	maxPagesEnv := envutil.GetStringOrDefault("MAX_PAGES_BEFORE_SPLIT", "")
-	maxPagesBeforeSplit := 20
-	if val, err := strconv.Atoi(maxPagesEnv); err == nil && val > 0 {
-		maxPagesBeforeSplit = val
-	}
+	maxPagesBeforeSplit := envutil.MustGetInt("MAX_PAGES_BEFORE_SPLIT")
 
 	var processedDocs []*pb.ProcessedDocument
 
 	for _, pdfPath := range extractedFiles {
-		var docTypeCorrupted string
-		if req.DocumentChunking != nil && req.DocumentChunking.DocTypeCorrupted != "" {
-			docTypeCorrupted = req.DocumentChunking.DocTypeCorrupted
+		docTypeCorrupted := parser.GetDocumentProcessorContract().GetDocTypeCorrupted()
+		if docTypeCorrupted == "" {
+			return nil, traceEvents, fmt.Errorf("DocTypeCorrupted must be configured in DocumentProcessorContract")
 		}
 
 		if err := api.ValidateFile(pdfPath, model.NewDefaultConfiguration()); err != nil {
@@ -146,17 +153,14 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				return nil, traceEvents, fmt.Errorf("failed to read pdf file: %w", err)
 			}
 
-			var actionName string
-			if req.DocumentChunking != nil && req.DocumentChunking.ActionNameClassify != "" {
-				actionName = req.DocumentChunking.ActionNameClassify
+			actionName := parser.GetDocumentProcessorContract().GetActionNameClassify()
+			if actionName == "" {
+				return nil, traceEvents, fmt.Errorf("ActionNameClassify must be configured in DocumentProcessorContract")
 			}
 
 			if p.AiClient != nil && req.OriginalRequest != nil {
 				// Construct action definition based on the client's original node config
-				sysContext := ""
-				if req.OriginalRequest.NodeConfig != nil {
-					sysContext = req.OriginalRequest.NodeConfig.SystemInstructions
-				}
+				sysContext := parser.GetSystemInstructions()
 
 				actionDef := &pb.ActionDefinition{
 					Name:   actionName,
@@ -197,9 +201,9 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				}
 			}
 
-			var docTypeClassified string
-			if req.DocumentChunking != nil && req.DocumentChunking.DocTypeClassified != "" {
-				docTypeClassified = req.DocumentChunking.DocTypeClassified
+			docTypeClassified := parser.GetDocumentProcessorContract().GetDocTypeClassified()
+			if docTypeClassified == "" {
+				return nil, traceEvents, fmt.Errorf("DocTypeClassified must be configured in DocumentProcessorContract")
 			}
 
 			processedDocs = append(processedDocs, &pb.ProcessedDocument{
@@ -211,10 +215,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			// Large document, execute sliding window boundary detection
 			addTrace(fmt.Sprintf("%s exceeds max pages (%d), engaging sliding window splitter...", filepath.Base(pdfPath), maxPagesBeforeSplit), "INFO")
 
-			slidingWindowSize := 5
-			if val, err := strconv.Atoi(envutil.GetStringOrDefault("SLIDING_WINDOW_SIZE", "")); err == nil && val > 0 {
-				slidingWindowSize = val
-			}
+			slidingWindowSize := envutil.MustGetInt("SLIDING_WINDOW_SIZE")
 
 			currentDocStart := 1
 			windowStart := 1
@@ -246,14 +247,19 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 						return nil, traceEvents, fmt.Errorf("failed to read slice file: %w", err)
 					}
 
-					prompt := "Analyze this document slice. Does a NEW document boundary begin somewhere within these pages? A document boundary is typically a new header, title page, or completely different formatting indicating a new file. Return a JSON object: {\"boundary_page_in_slice\": 3} where 3 is the page number (relative to this slice) the new document starts. If it is all one continuous document, return {\"boundary_page_in_slice\": 0}."
-					if req.DocumentChunking != nil && req.DocumentChunking.BoundaryDetectionPrompt != "" {
-						prompt = req.DocumentChunking.BoundaryDetectionPrompt
+					prompt := parser.GetDocumentProcessorContract().GetBoundaryDetectionPrompt()
+					if prompt == "" {
+						addTrace("Boundary detection prompt missing or empty in request", "ERROR")
+						err := os.Remove(sliceTempPath)
+						if err != nil {
+							return nil, nil, err
+						}
+						return nil, traceEvents, fmt.Errorf("boundary detection prompt is required but not provided in request")
 					}
 
-					var actionName string
-					if req.DocumentChunking != nil && req.DocumentChunking.ActionNameBoundary != "" {
-						actionName = req.DocumentChunking.ActionNameBoundary
+					actionName := parser.GetDocumentProcessorContract().GetActionNameBoundary()
+					if actionName == "" {
+						return nil, traceEvents, fmt.Errorf("ActionNameBoundary must be configured in DocumentProcessorContract")
 					}
 
 					actionDef := &pb.ActionDefinition{
@@ -272,15 +278,16 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 							Identity:      req.GetIdentity(),
 						})
 						if err == nil {
-							stream.CloseSend()
+							err := stream.CloseSend()
+							if err != nil {
+								return nil, nil, err
+							}
 							resp, err = stream.Recv()
 						}
 					}
 
 					if err == nil && resp != nil && resp.Success {
-						var boundResp struct {
-							BoundaryPageInSlice int `json:"boundary_page_in_slice"`
-						}
+						var boundResp BoundaryDetectionResponse
 						if json.Unmarshal([]byte(resp.ActionResultJson), &boundResp) == nil {
 							boundaryPageInSlice = boundResp.BoundaryPageInSlice
 						}
@@ -291,9 +298,9 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 				os.Remove(sliceTempPath)
 
-				var docTypeChunked string
-				if req.DocumentChunking != nil && req.DocumentChunking.DocTypeChunked != "" {
-					docTypeChunked = req.DocumentChunking.DocTypeChunked
+				docTypeChunked := parser.GetDocumentProcessorContract().GetDocTypeChunked()
+				if docTypeChunked == "" {
+					return nil, traceEvents, fmt.Errorf("DocTypeChunked must be configured in DocumentProcessorContract")
 				}
 
 				if boundaryPageInSlice > 0 {
@@ -339,9 +346,9 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 			// Handle EOF trailing document
 			if currentDocStart <= pageCount {
-				var docTypeChunked string
-				if req.DocumentChunking != nil && req.DocumentChunking.DocTypeChunked != "" {
-					docTypeChunked = req.DocumentChunking.DocTypeChunked
+				docTypeChunked := parser.GetDocumentProcessorContract().GetDocTypeChunked()
+				if docTypeChunked == "" {
+					return nil, traceEvents, fmt.Errorf("DocTypeChunked must be configured in DocumentProcessorContract")
 				}
 
 				chunkPath := filepath.Join(extractDir, fmt.Sprintf("chunk_%d_%d.pdf", currentDocStart, pageCount))

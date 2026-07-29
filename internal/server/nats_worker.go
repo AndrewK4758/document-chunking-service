@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/AndrewK4758/shared_utils/envutil"
-	"strconv"
 	"time"
+
+	"github.com/AndrewK4758/shared_utils/envutil"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -18,6 +18,7 @@ import (
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/logger"
 	"github.com/AndrewK4758/shared_utils/natsutil"
+	"github.com/AndrewK4758/shared_utils/workflowparser"
 )
 
 type NatsServer struct {
@@ -39,7 +40,10 @@ func (s *NatsServer) Start(ctx context.Context) error {
 
 	var cons jetstream.Consumer
 	var err error
-	for i := 0; i < 90; i++ {
+	retryCount := envutil.MustGetInt("NATS_CONSUMER_RETRY_COUNT")
+	retrySleepSec := envutil.MustGetInt("NATS_CONSUMER_RETRY_SLEEP_SEC")
+	
+	for range retryCount {
 		cons, err = s.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 			Durable:        "doc_processor_workers",
 			AckPolicy:      jetstream.AckExplicitPolicy,
@@ -51,7 +55,7 @@ func (s *NatsServer) Start(ctx context.Context) error {
 			break
 		}
 		logger.Info("DocProcessor", "Waiting for stream %s to be created... (%v)", streamName, err)
-		time.Sleep(2 * time.Second)
+		time.Sleep(time.Duration(retrySleepSec) * time.Second)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to create JetStream consumer after retries: %w", err)
@@ -100,7 +104,8 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	t, a, j := natsutil.ExtractIdentity(req.Identity)
+	parser := workflowparser.NewNodeRequestParser(&req)
+	t, a, j := parser.ExtractIdentity()
 
 	natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 		Component: "DocProcessor",
@@ -150,13 +155,10 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		}
 	}()
 
-	var docUri string
-	if req.StorageServiceContract != nil {
-		docUri = req.StorageServiceContract.DocumentStorageUri
-	}
+	docUri := parser.GetDocumentUri()
 
 	if docUri == "" {
-		logger.Info("DocProcessor", "StorageServiceContract not provided or DocumentStorageUri is empty")
+		logger.Info("DocProcessor", "StorageContract not provided or DocumentUri is empty")
 
 		if replySubj != "" {
 			resp := &pb.PerformActionResponse{
@@ -164,7 +166,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 				ErrorContract: &pb.ErrorContract{
 					Code:    "MISSING_DOCUMENT_URI",
 					Source:  "document_processing_service",
-					Message: "GlobalState must contain DocumentStorageUri or DocumentPath",
+					Message: "StorageContract.DocumentUri must be provided",
 				},
 			}
 			respBytes, err := proto.Marshal(resp)
@@ -207,12 +209,10 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	var resp *pb.PerformActionResponse
 
 	chunkReq := &pb.ChunkDocumentRequest{
-		Identity: req.Identity,
-		StepId:   req.StepId,
-		DocumentChunking: &pb.DocumentChunkingContract{
-			DocumentStorageUri: docUri,
-		},
-		OriginalRequest: &req,
+		Identity:          parser.GetIdentity(),
+		StepId:            parser.GetStepId(),
+		DocumentProcessor: parser.GetDocumentProcessorContract(),
+		OriginalRequest:   &req,
 	}
 
 	docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
@@ -222,7 +222,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	}
 
 	if err != nil {
-		logger.Info("DocProcessor", "Error processing document for JobID %s: %v", req.Identity.GetJobId(), err)
+		logger.Info("DocProcessor", "Error processing document for JobID %s: %v", j, err)
 		resp.IsTransientError = true
 		resp.ErrorContract = &pb.ErrorContract{
 			Code:    "DOCUMENT_PROCESSING_FAILED",
@@ -230,15 +230,11 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 			Message: err.Error(),
 		}
 	} else {
-		logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", req.Identity.GetJobId(), len(docs))
+		logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", j, len(docs))
 		jsonBytes, err := json.Marshal(docs)
 		if err != nil {
 			logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", err)
-			nackTimeoutJsonStr := envutil.GetStringOrDefault("NACK_JSON_TIMEOUT", "")
-			nackTimeoutJson, errParse := strconv.Atoi(nackTimeoutJsonStr)
-			if errParse != nil {
-				nackTimeoutJson = 5
-			}
+			nackTimeoutJson := envutil.MustGetInt("NACK_JSON_TIMEOUT")
 			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 				Component:  "DocProcessor",
 				Event:      "NACKED",

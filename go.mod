@@ -6,7 +6,6 @@ require (
 	github.com/AndrewK4758/shared_protos v0.0.0-20260717031111-875804e35fbb
 	github.com/AndrewK4758/shared_utils v0.0.0-00010101000000-000000000000
 	github.com/bodgit/sevenzip v1.6.5
-	github.com/joho/godotenv v1.5.1
 	github.com/mholt/archiver/v3 v3.5.1
 	github.com/nats-io/nats.go v1.52.0
 	github.com/pdfcpu/pdfcpu v0.13.0
@@ -26,11 +25,12 @@ require (
 	github.com/hhrutter/lzw v1.0.0 // indirect
 	github.com/hhrutter/pkcs7 v0.2.2 // indirect
 	github.com/hhrutter/tiff v1.0.3 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/pgzip v1.2.5 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect
-	github.com/nats-io/nkeys v0.4.15 // indirect
+	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/nwaples/rardecode v1.1.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect

@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/logger"
+	"github.com/AndrewK4758/shared_utils/workflowparser"
 )
 
 type DocumentProcessingServer struct {
@@ -33,10 +34,13 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 		}
 
 		docUri := "unknown"
-		if req.DocumentChunking != nil {
-			docUri = req.DocumentChunking.DocumentStorageUri
+		if req.OriginalRequest != nil {
+			parser := workflowparser.NewNodeRequestParser(req.OriginalRequest)
+			if uri := parser.GetDocumentUri(); uri != "" {
+				docUri = uri
+			}
 		}
-		logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentStorageUri: %s", req.Identity.JobId, docUri)
+		logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentUri: %s", req.Identity.JobId, docUri)
 
 		docs, traceEvents, err := s.chunker.ProcessZipFile(stream.Context(), req)
 		resp := &pb.ChunkDocumentResponse{

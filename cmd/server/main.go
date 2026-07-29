@@ -22,7 +22,7 @@ func main() {
 	envutil.LoadEnv(".env", "document_processing_service/.env", "../.env", "../../.env")
 	logger.InitLogger()
 
-	port := envutil.GetStringOrDefault("GRPC_PORT", "")
+	port := envutil.MustGetString("GRPC_PORT")
 	if port == "" {
 		port = "50054" // Default port for document_processing_service
 	}
@@ -35,7 +35,7 @@ func main() {
 	s := grpc.NewServer()
 
 	// Dial AI Service
-	aiServiceUrl := envutil.GetStringOrDefault("AI_SERVICE_URL", "")
+	aiServiceUrl := envutil.MustGetString("AI_SERVICE_URL")
 	if aiServiceUrl == "" {
 		aiServiceUrl = "localhost:50051" // Default AI Service URL
 	}
@@ -63,7 +63,7 @@ func main() {
 	}
 
 	// Initialize Storage Gateway Client
-	gatewayAddr := envutil.GetStringOrDefault("STORAGE_GATEWAY_ADDR", "")
+	gatewayAddr := envutil.MustGetString("STORAGE_GATEWAY_ADDR")
 	if gatewayAddr == "" {
 		gatewayAddr = "localhost:50058"
 	}
@@ -76,7 +76,7 @@ func main() {
 	store := storage.NewGatewayStorage(pb.NewStorageGatewayServiceClient(gatewayConn))
 
 	// Initialize NATS
-	natsURL := envutil.GetStringOrDefault("NATS_URL", "")
+	natsURL := envutil.MustGetString("NATS_URL")
 	if natsURL == "" {
 		natsURL = "nats://localhost:4222"
 	}

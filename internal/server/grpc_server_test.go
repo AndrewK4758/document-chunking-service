@@ -66,6 +66,15 @@ func TestChunkDocument_Success(t *testing.T) {
 	req := &pb.ChunkDocumentRequest{
 		Identity:     &pb.InfrastructureIdentity{JobId: "job_123"},
 		RawFileBytes: zipBytes,
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+				ActionNameClassify: "action",
+				DocTypeClassified: "classified",
+				ActionNameBoundary: "boundary",
+				DocTypeChunked: "chunked",
+			},
+		},
 	}
 
 	mockStream := &mockChunkDocumentServer{req: req}
@@ -88,8 +97,13 @@ func TestChunkDocument_Failure(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, store)
 
 	req := &pb.ChunkDocumentRequest{
-		Identity:         &pb.InfrastructureIdentity{JobId: "job_bad"},
-		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "nonexistent/path/to/bad.zip"},
+		Identity: &pb.InfrastructureIdentity{JobId: "job_bad"},
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{DocumentUri: "nonexistent/path/to/bad.zip"},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+			},
+		},
 	}
 
 	mockStream := &mockChunkDocumentServer{req: req}

@@ -7,11 +7,27 @@ import (
 	"path/filepath"
 	"testing"
 
+	"google.golang.org/grpc"
+
 	pb "github.com/AndrewK4758/shared_protos"
 )
 
 // mockAiClient is a simple mock for the gRPC client
-type mockAiClient struct{} // We don't actually call it in ProcessZipFile yet since it's stubbed out.
+type mockAiClient struct{}
+
+var _ pb.DocumentProcessorClient = (*mockAiClient)(nil)
+
+func (m *mockAiClient) GetAvailableModels(ctx context.Context, in *pb.GetAvailableModelsRequest, opts ...grpc.CallOption) (*pb.GetAvailableModelsResponse, error) {
+	return nil, nil
+}
+
+func (m *mockAiClient) PerformAction(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[pb.PerformActionRequest, pb.PerformActionResponse], error) {
+	return nil, nil
+}
+
+func (m *mockAiClient) ProcessDocument(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[pb.ProcessDocumentRequest, pb.ProcessDocumentResponse], error) {
+	return nil, nil
+}
 
 // mockStorage provides a dummy local disk storage for unit tests
 type mockStorage struct {
@@ -67,8 +83,17 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 	zipBytes, _ := os.ReadFile(zipPath)
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-		RawFileBytes:     zipBytes,
-		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "test.zip"},
+		RawFileBytes: zipBytes,
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{DocumentUri: "test.zip"},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+				ActionNameClassify: "action",
+				DocTypeClassified: "classified",
+				ActionNameBoundary: "boundary",
+				DocTypeChunked: "chunked",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -101,7 +126,14 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 
 	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
-	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "bad.zip"}})
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{DocumentUri: "bad.zip"},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+			},
+		},
+	})
 	if err == nil {
 		t.Fatal("Expected error for invalid zip, got nil")
 	}
@@ -121,8 +153,17 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 	zipBytes, _ := os.ReadFile(zipPath)
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-		RawFileBytes:     zipBytes,
-		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "slip.zip"},
+		RawFileBytes: zipBytes,
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{DocumentUri: "slip.zip"},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+				ActionNameClassify: "action",
+				DocTypeClassified: "classified",
+				ActionNameBoundary: "boundary",
+				DocTypeChunked: "chunked",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -140,8 +181,13 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 	cancel() // Cancel immediately
 
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
-		RawFileBytes:     []byte("dummy"),
-		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "dummy.zip"},
+		RawFileBytes: []byte("dummy"),
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{DocumentUri: "dummy.zip"},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+			},
+		},
 	})
 	if err == nil {
 		t.Fatal("Expected error due to context cancellation, got nil")
@@ -158,7 +204,12 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-		DocumentChunking: &pb.DocumentChunkingContract{DocumentStorageUri: "missing_from_storage.zip"},
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{DocumentUri: "missing_from_storage.zip"},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+			},
+		},
 	})
 
 	if err == nil {
@@ -166,5 +217,34 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 	}
 	if err.Error() == "no file data provided in request" {
 		t.Errorf("Expected storage fetch error, got missing data error")
+	}
+}
+
+func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
+	t.Setenv("MAX_PAGES_BEFORE_SPLIT", "1")
+	tempDir := t.TempDir()
+	zipPath := filepath.Join(tempDir, "multi.zip")
+
+	createTestZip(t, map[string]string{
+		"doc1.pdf": "dummy pdf content",
+	}, zipPath)
+
+	store := &mockStorage{basePath: tempDir}
+	zipBytes, _ := os.ReadFile(zipPath)
+	// Create mock AiClient non-nil so sliding window attempts AI call
+	chunker := NewChunkingProcessor(&mockAiClient{}, store)
+	docs, _, _ := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
+		RawFileBytes: zipBytes,
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{DocumentUri: "multi.zip"},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				DocTypeCorrupted: "corrupted",
+				BoundaryDetectionPrompt: "", // Empty prompt intentionally
+			},
+		},
+	})
+	// Validate that zip processing completed and handled invalid/dummy PDF gracefully
+	if len(docs) != 1 {
+		t.Errorf("Expected 1 processed document (corrupted/dummy PDF handled), got %d", len(docs))
 	}
 }
