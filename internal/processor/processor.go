@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/AndrewK4758/shared_utils/envutil"
 	"os"
 	"path/filepath"
 	"time"
@@ -77,7 +76,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	defer func(path string) {
 		err := os.RemoveAll(path)
 		if err != nil {
-
+			addTrace(fmt.Sprintf("Failed to clean up extraction directory %s: %v", path, err), "WARN")
 		}
 	}(extractDir)
 
@@ -102,7 +101,10 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 	addTrace(fmt.Sprintf("Extracted %d documents", len(extractedFiles)), "INFO")
 
-	maxPagesBeforeSplit := envutil.MustGetInt("MAX_PAGES_BEFORE_SPLIT")
+	maxPagesBeforeSplit := int(parser.GetDocumentProcessorContract().GetMaxPagesBeforeSplit())
+	if maxPagesBeforeSplit <= 0 {
+		return nil, traceEvents, fmt.Errorf("MaxPagesBeforeSplit must be configured in DocumentProcessorContract and greater than 0")
+	}
 
 	var processedDocs []*pb.ProcessedDocument
 
@@ -186,7 +188,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				if err != nil {
 					addTrace(fmt.Sprintf("AI Classification failed: %v", err), "ERROR")
 				} else if resp != nil {
-					addTrace(fmt.Sprintf("AI Classification successful: %s", resp.ActionResultJson), "INFO")
+					jsonBytes, _ := resp.ActionResult.MarshalJSON()
+					addTrace(fmt.Sprintf("AI Classification successful: %s", string(jsonBytes)), "INFO")
 				}
 			}
 
@@ -215,7 +218,10 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			// Large document, execute sliding window boundary detection
 			addTrace(fmt.Sprintf("%s exceeds max pages (%d), engaging sliding window splitter...", filepath.Base(pdfPath), maxPagesBeforeSplit), "INFO")
 
-			slidingWindowSize := envutil.MustGetInt("SLIDING_WINDOW_SIZE")
+			slidingWindowSize := int(parser.GetDocumentProcessorContract().GetSlidingWindowSize())
+			if slidingWindowSize <= 0 {
+				return nil, traceEvents, fmt.Errorf("SlidingWindowSize must be configured in DocumentProcessorContract and greater than 0")
+			}
 
 			currentDocStart := 1
 			windowStart := 1
@@ -288,9 +294,12 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 					if err == nil && resp != nil && resp.Success {
 						var boundResp BoundaryDetectionResponse
-						if json.Unmarshal([]byte(resp.ActionResultJson), &boundResp) == nil {
-							boundaryPageInSlice = boundResp.BoundaryPageInSlice
+						jsonBytes, _ := resp.ActionResult.MarshalJSON()
+						if unmarshalErr := json.Unmarshal(jsonBytes, &boundResp); unmarshalErr != nil {
+							addTrace(fmt.Sprintf("Failed to unmarshal boundary detection response: %v", unmarshalErr), "ERROR")
+							return nil, traceEvents, fmt.Errorf("failed to unmarshal boundary detection response: %w", unmarshalErr)
 						}
+						boundaryPageInSlice = boundResp.BoundaryPageInSlice
 					} else {
 						addTrace(fmt.Sprintf("AI Boundary Detection failed for slice %d-%d: %v", windowStart, windowEnd, err), "WARN")
 					}
@@ -318,10 +327,16 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 						var relativePath string
 						if p.Store != nil {
-							chunkBytes, _ := os.ReadFile(chunkPath)
+							chunkBytes, readErr := os.ReadFile(chunkPath)
+							if readErr != nil {
+								addTrace(fmt.Sprintf("Failed to read chunk file %s: %v", chunkPath, readErr), "ERROR")
+								return nil, traceEvents, fmt.Errorf("failed to read chunk file: %w", readErr)
+							}
 							uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), req.GetIdentity(), chunkBytes)
 							if err == nil {
 								relativePath = uploadedPath
+							} else {
+								addTrace(fmt.Sprintf("Failed to upload chunk %d: %v", chunkIndex, err), "ERROR")
 							}
 						}
 
@@ -362,10 +377,16 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 				var relativePath string
 				if p.Store != nil {
-					chunkBytes, _ := os.ReadFile(chunkPath)
+					chunkBytes, readErr := os.ReadFile(chunkPath)
+					if readErr != nil {
+						addTrace(fmt.Sprintf("Failed to read final chunk file %s: %v", chunkPath, readErr), "ERROR")
+						return nil, traceEvents, fmt.Errorf("failed to read final chunk file: %w", readErr)
+					}
 					uploadedPath, err := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), req.GetIdentity(), chunkBytes)
 					if err == nil {
 						relativePath = uploadedPath
+					} else {
+						addTrace(fmt.Sprintf("Failed to upload final chunk %d: %v", chunkIndex, err), "ERROR")
 					}
 				}
 

@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"document_processing_service/internal/processor"
 	"document_processing_service/internal/storage"
@@ -251,7 +253,13 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 			msg.NakWithDelay(time.Duration(nackTimeoutJson) * time.Second)
 			return
 		}
-		resp.ActionResultJson = string(jsonBytes)
+		var structResult structpb.Struct
+		jsonString := fmt.Sprintf(`{"documents": %s}`, string(jsonBytes))
+		if err := protojson.Unmarshal([]byte(jsonString), &structResult); err == nil {
+			resp.ActionResult = &structResult
+		} else {
+			logger.Warn("DocProcessor", "Failed to unmarshal docs to structpb.Struct: %v", err)
+		}
 	}
 
 	if replySubj != "" {

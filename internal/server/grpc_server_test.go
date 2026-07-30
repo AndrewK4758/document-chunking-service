@@ -68,6 +68,8 @@ func TestChunkDocument_Success(t *testing.T) {
 		RawFileBytes: zipBytes,
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 				ActionNameClassify: "action",
 				DocTypeClassified: "classified",
@@ -101,6 +103,8 @@ func TestChunkDocument_Failure(t *testing.T) {
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			Storage: &pb.StorageContract{DocumentUri: "nonexistent/path/to/bad.zip"},
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 			},
 		},

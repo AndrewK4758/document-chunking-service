@@ -87,6 +87,8 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			Storage: &pb.StorageContract{DocumentUri: "test.zip"},
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 				ActionNameClassify: "action",
 				DocTypeClassified: "classified",
@@ -130,6 +132,8 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			Storage: &pb.StorageContract{DocumentUri: "bad.zip"},
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 			},
 		},
@@ -157,6 +161,8 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			Storage: &pb.StorageContract{DocumentUri: "slip.zip"},
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 				ActionNameClassify: "action",
 				DocTypeClassified: "classified",
@@ -185,6 +191,8 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			Storage: &pb.StorageContract{DocumentUri: "dummy.zip"},
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 			},
 		},
@@ -207,6 +215,8 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			Storage: &pb.StorageContract{DocumentUri: "missing_from_storage.zip"},
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 			},
 		},
@@ -221,7 +231,6 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 }
 
 func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
-	t.Setenv("MAX_PAGES_BEFORE_SPLIT", "1")
 	tempDir := t.TempDir()
 	zipPath := filepath.Join(tempDir, "multi.zip")
 
@@ -238,6 +247,8 @@ func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
 		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
 			Storage: &pb.StorageContract{DocumentUri: "multi.zip"},
 			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 1,
+				SlidingWindowSize: 5,
 				DocTypeCorrupted: "corrupted",
 				BoundaryDetectionPrompt: "", // Empty prompt intentionally
 			},
