@@ -5,6 +5,7 @@ import (
 	"net"
 
 	"github.com/AndrewK4758/shared_utils/envutil"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/AndrewK4758/shared_utils/logger"
 	"github.com/AndrewK4758/shared_utils/natsutil"
@@ -23,9 +24,6 @@ func main() {
 	logger.InitLogger()
 
 	port := envutil.MustGetString("GRPC_PORT")
-	if port == "" {
-		port = "50054" // Default port for document_processing_service
-	}
 
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
@@ -36,11 +34,8 @@ func main() {
 
 	// Dial AI Service
 	aiServiceUrl := envutil.MustGetString("AI_SERVICE_URL")
-	if aiServiceUrl == "" {
-		aiServiceUrl = "localhost:50051" // Default AI Service URL
-	}
 
-	aiConn, err := grpc.Dial(aiServiceUrl, grpc.WithInsecure())
+	aiConn, err := grpc.NewClient(aiServiceUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		logger.Fatal("DocProcessor", "failed to dial ai_service: %v", err)
 	}
@@ -64,10 +59,8 @@ func main() {
 
 	// Initialize Storage Gateway Client
 	gatewayAddr := envutil.MustGetString("STORAGE_GATEWAY_ADDR")
-	if gatewayAddr == "" {
-		gatewayAddr = "localhost:50058"
-	}
-	gatewayConn, err := grpc.Dial(gatewayAddr, grpc.WithInsecure())
+
+	gatewayConn, err := grpc.NewClient(gatewayAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		logger.Fatal("DocProcessor", "failed to dial storage_gateway: %v", err)
 	}
