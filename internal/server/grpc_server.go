@@ -23,6 +23,21 @@ func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store stor
 	}
 }
 
+func extractDocUri(req *pb.ChunkDocumentRequest) string {
+	if req == nil {
+		return "unknown"
+	}
+	if req.OriginalRequest == nil {
+		return "unknown"
+	}
+	parser := workflowparser.NewNodeRequestParser(req.OriginalRequest)
+	uri := parser.GetDocumentUri()
+	if uri == "" {
+		return "unknown"
+	}
+	return uri
+}
+
 func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingService_ChunkDocumentServer) error {
 	for {
 		req, err := stream.Recv()
@@ -33,13 +48,7 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 			return fmt.Errorf("failed to receive chunk document request from stream: %w", err)
 		}
 
-		docUri := "unknown"
-		if req.OriginalRequest != nil {
-			parser := workflowparser.NewNodeRequestParser(req.OriginalRequest)
-			if uri := parser.GetDocumentUri(); uri != "" {
-				docUri = uri
-			}
-		}
+		docUri := extractDocUri(req)
 		logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentUri: %s", req.Identity.JobId, docUri)
 
 		docs, traceEvents, err := s.chunker.ProcessZipFile(stream.Context(), req)
@@ -51,13 +60,16 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 			logger.Info("DocProcessor", "Error processing zip file for JobID %s: %v", req.Identity.JobId, err)
 			resp.Success = false
 			resp.ErrorMessage = err.Error()
-		} else {
+		}
+
+		if err == nil {
 			logger.Info("DocProcessor", "Successfully processed zip file for JobID %s, extracted %d documents", req.Identity.JobId, len(docs))
 			resp.Success = true
 			resp.ProcessedDocuments = docs
 		}
 
-		if err := stream.Send(resp); err != nil {
+		err = stream.Send(resp)
+		if err != nil {
 			return fmt.Errorf("failed to send chunk document response to stream: %w", err)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -113,7 +114,7 @@ func TestProcessZipFile_EmptyPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error for empty zip path, got nil")
 	}
-	if err.Error() != "no file data provided in request" {
+	if !strings.Contains(err.Error(), "no file data provided in request") {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 }
@@ -257,5 +258,33 @@ func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
 	// Validate that zip processing completed and handled invalid/dummy PDF gracefully
 	if len(docs) != 1 {
 		t.Errorf("Expected 1 processed document (corrupted/dummy PDF handled), got %d", len(docs))
+	}
+}
+
+func TestProcessZipFile_EnrichedErrorFormat(t *testing.T) {
+	tempDir := t.TempDir()
+	store := &mockStorage{basePath: tempDir}
+	chunker := NewChunkingProcessor(nil, store)
+
+	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
+		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
+			Storage: &pb.StorageContract{
+				DocumentUri: "internal-store://tenant/app/job/missing.zip",
+			},
+			DocumentProcessor: &pb.DocumentProcessorContract{
+				MaxPagesBeforeSplit: 10,
+				SlidingWindowSize: 5,
+				DocTypeCorrupted: "corrupted",
+			},
+		},
+	})
+
+	if err == nil {
+		t.Fatal("Expected error for missing storage file, got nil")
+	}
+
+	expectedPrefix := "[Step: JIT_FETCH, URI: internal-store://tenant/app/job/missing.zip]"
+	if !strings.HasPrefix(err.Error(), expectedPrefix) {
+		t.Errorf("Expected error prefix %q, got %q", expectedPrefix, err.Error())
 	}
 }

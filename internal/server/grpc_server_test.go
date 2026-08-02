@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pb "github.com/AndrewK4758/shared_protos"
@@ -123,6 +124,10 @@ func TestChunkDocument_Failure(t *testing.T) {
 	if resp.ErrorMessage == "" {
 		t.Error("Expected an ErrorMessage, got empty string")
 	}
+	expectedPrefix := "[Step: JIT_FETCH, URI: nonexistent/path/to/bad.zip]"
+	if !strings.HasPrefix(resp.ErrorMessage, expectedPrefix) {
+		t.Errorf("Expected ErrorMessage prefix %q, got %q", expectedPrefix, resp.ErrorMessage)
+	}
 }
 
 func TestChunkDocument_EmptyRequest(t *testing.T) {
@@ -141,7 +146,7 @@ func TestChunkDocument_EmptyRequest(t *testing.T) {
 	if resp.Success {
 		t.Error("Expected Success=false for empty request, got true")
 	}
-	if resp.ErrorMessage != "no file data provided in request" {
+	if !strings.Contains(resp.ErrorMessage, "no file data provided in request") {
 		t.Errorf("Unexpected ErrorMessage: %s", resp.ErrorMessage)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 
 	pb "github.com/AndrewK4758/shared_protos"
@@ -151,7 +152,7 @@ func TestGatewayStorage_FetchFile_StreamError(t *testing.T) {
 			errs: []error{nil, fmt.Errorf("network partition")},
 		},
 	}
-	store := NewGatewayStorage(mockClient)
+	store := NewGatewayStorageWithRetry(mockClient, 0, 1)
 
 	_, err := store.FetchFile(context.Background(), "internal-store://test", nil)
 	if err == nil {
@@ -214,3 +215,174 @@ func TestGatewayStorage_ForwardMetadata(t *testing.T) {
 		t.Errorf("Expected tenant_id=test_tenant in outgoing metadata, got %v", outMD)
 	}
 }
+
+// --- MULTI-ATTEMPT RETRY TESTS ---
+
+type mockMultiAttemptGatewayClient struct {
+	pb.StorageGatewayServiceClient
+	calls      int64
+	streamFunc func(call int) (pb.StorageGatewayService_DownloadDocumentClient, error)
+}
+
+func (m *mockMultiAttemptGatewayClient) DownloadDocument(ctx context.Context, in *pb.DownloadRequest, opts ...grpc.CallOption) (pb.StorageGatewayService_DownloadDocumentClient, error) {
+	call := atomic.AddInt64(&m.calls, 1)
+	if m.streamFunc != nil {
+		return m.streamFunc(int(call))
+	}
+	return nil, fmt.Errorf("no streamFunc configured")
+}
+
+func TestGatewayStorage_FetchFile_RetrySuccess(t *testing.T) {
+	client := &mockMultiAttemptGatewayClient{
+		streamFunc: func(call int) (pb.StorageGatewayService_DownloadDocumentClient, error) {
+			if call == 1 {
+				return nil, fmt.Errorf("transient connection error")
+			}
+			return &mockDownloadStream{
+				responses: []*pb.DownloadResponse{
+					{ChunkData: []byte("recovered data")},
+				},
+				errs: []error{nil},
+			}, nil
+		},
+	}
+
+	store := NewGatewayStorageWithRetry(client, 3, 1)
+	data, err := store.FetchFile(context.Background(), "internal-store://test/doc.pdf", nil)
+	if err != nil {
+		t.Fatalf("Expected successful fetch on 2nd attempt, got err: %v", err)
+	}
+	if string(data) != "recovered data" {
+		t.Errorf("Expected 'recovered data', got %q", string(data))
+	}
+	if atomic.LoadInt64(&client.calls) != 2 {
+		t.Errorf("Expected exactly 2 calls (1 failure + 1 success), got %d", atomic.LoadInt64(&client.calls))
+	}
+}
+
+func TestGatewayStorage_FetchFile_ExhaustedRetries(t *testing.T) {
+	client := &mockMultiAttemptGatewayClient{
+		streamFunc: func(call int) (pb.StorageGatewayService_DownloadDocumentClient, error) {
+			return nil, fmt.Errorf("persistent gateway error")
+		},
+	}
+
+	store := NewGatewayStorageWithRetry(client, 3, 1)
+	_, err := store.FetchFile(context.Background(), "internal-store://test/doc.pdf", nil)
+	if err == nil {
+		t.Fatal("Expected error after exhausted retries, got nil")
+	}
+	if atomic.LoadInt64(&client.calls) != 4 { // 1 initial attempt + 3 retries = 4 total calls
+		t.Errorf("Expected 4 calls for 3 retries, got %d", atomic.LoadInt64(&client.calls))
+	}
+}
+
+func TestGatewayStorage_FetchFile_ContextCancelledDuringRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &mockMultiAttemptGatewayClient{
+		streamFunc: func(call int) (pb.StorageGatewayService_DownloadDocumentClient, error) {
+			cancel() // Cancel context on first call failure
+			return nil, fmt.Errorf("initial connection failure")
+		},
+	}
+
+	store := NewGatewayStorageWithRetry(client, 3, 100)
+	_, err := store.FetchFile(ctx, "internal-store://test/doc.pdf", nil)
+	if err != context.Canceled {
+		t.Errorf("Expected context.Canceled when context is cancelled during retry backoff, got: %v", err)
+	}
+}
+
+func TestGatewayStorage_FetchFile_ZeroRetries(t *testing.T) {
+	client := &mockMultiAttemptGatewayClient{
+		streamFunc: func(call int) (pb.StorageGatewayService_DownloadDocumentClient, error) {
+			return nil, fmt.Errorf("single attempt failure")
+		},
+	}
+
+	store := NewGatewayStorageWithRetry(client, 0, 1)
+	_, err := store.FetchFile(context.Background(), "internal-store://test/doc.pdf", nil)
+	if err == nil {
+		t.Fatal("Expected error with zero retries, got nil")
+	}
+	if atomic.LoadInt64(&client.calls) != 1 {
+		t.Errorf("Expected exactly 1 call when retryCount is 0, got %d", atomic.LoadInt64(&client.calls))
+	}
+}
+
+func TestGatewayStorage_AdversarialMidStreamInterruption(t *testing.T) {
+	// Tests stream fail mid-transmission (chunk 1 ok, chunk 2 errors) then recovers on attempt 2
+	client := &mockMultiAttemptGatewayClient{
+		streamFunc: func(call int) (pb.StorageGatewayService_DownloadDocumentClient, error) {
+			if call == 1 {
+				return &mockDownloadStream{
+					responses: []*pb.DownloadResponse{
+						{ChunkData: []byte("part1_")},
+						nil, // chunk 2 returns error
+					},
+					errs: []error{nil, fmt.Errorf("connection reset by peer mid-stream")},
+				}, nil
+			}
+			return &mockDownloadStream{
+				responses: []*pb.DownloadResponse{
+					{ChunkData: []byte("part1_")},
+					{ChunkData: []byte("part2_complete")},
+				},
+				errs: []error{nil, nil},
+			}, nil
+		},
+	}
+
+	store := NewGatewayStorageWithRetry(client, 3, 5)
+	data, err := store.FetchFile(context.Background(), "internal-store://test/midstream.pdf", nil)
+	if err != nil {
+		t.Fatalf("Expected recovery after mid-stream interruption, got err: %v", err)
+	}
+	if string(data) != "part1_part2_complete" {
+		t.Errorf("Expected 'part1_part2_complete', got %q", string(data))
+	}
+	if atomic.LoadInt64(&client.calls) != 2 {
+		t.Errorf("Expected 2 calls (1 mid-stream failure + 1 success), got %d", atomic.LoadInt64(&client.calls))
+	}
+}
+
+func TestGatewayStorage_AdversarialConcurrentStreams(t *testing.T) {
+	// Concurrent streaming under race detector
+	client := &mockMultiAttemptGatewayClient{
+		streamFunc: func(call int) (pb.StorageGatewayService_DownloadDocumentClient, error) {
+			return &mockDownloadStream{
+				responses: []*pb.DownloadResponse{
+					{ChunkData: []byte("concurrent_chunk_1 ")},
+					{ChunkData: []byte("concurrent_chunk_2")},
+				},
+				errs: []error{nil, nil},
+			}, nil
+		},
+	}
+
+	store := NewGatewayStorageWithRetry(client, 2, 1)
+	concurrency := 20
+	errChan := make(chan error, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func(id int) {
+			data, err := store.FetchFile(context.Background(), fmt.Sprintf("internal-store://tenant/app/job/doc_%d.pdf", id), nil)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if string(data) != "concurrent_chunk_1 concurrent_chunk_2" {
+				errChan <- fmt.Errorf("unexpected content: %s", string(data))
+				return
+			}
+			errChan <- nil
+		}(i)
+	}
+
+	for i := 0; i < concurrency; i++ {
+		if err := <-errChan; err != nil {
+			t.Errorf("Concurrent fetch failed: %v", err)
+		}
+	}
+}
+

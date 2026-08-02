@@ -10,8 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"document_processing_service/internal/processor"
@@ -44,7 +44,7 @@ func (s *NatsServer) Start(ctx context.Context) error {
 	var err error
 	retryCount := envutil.MustGetInt("NATS_CONSUMER_RETRY_COUNT")
 	retrySleepSec := envutil.MustGetInt("NATS_CONSUMER_RETRY_SLEEP_SEC")
-	
+
 	for range retryCount {
 		cons, err = s.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 			Durable:        "doc_processor_workers",
@@ -76,6 +76,175 @@ func (s *NatsServer) Start(ctx context.Context) error {
 	return nil
 }
 
+func (s *NatsServer) sendErrorReply(ctx context.Context, replySubj string, code string, msgStr string, t, a, j string) {
+	if replySubj == "" {
+		return
+	}
+	resp := &pb.PerformActionResponse{
+		Success: false,
+		ErrorContract: &pb.ErrorContract{
+			Code:    code,
+			Source:  "document_processing_service",
+			Message: msgStr,
+		},
+	}
+	respBytes, err := proto.Marshal(resp)
+	if err != nil {
+		logger.Warn("DocProcessor", "Failed to marshal error response: %v", err)
+		return
+	}
+	_, pubErr := s.js.Publish(ctx, replySubj, respBytes)
+	natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+		Component: "DocProcessor",
+		Event:     "ENQUEUED",
+		Stream:    "ORCHESTRATOR_RESPONSES",
+		Subject:   replySubj,
+		TenantID:  t,
+		AppID:     a,
+		JobID:     j,
+		SizeBytes: len(respBytes),
+		Error:     pubErr,
+	})
+}
+
+func (s *NatsServer) ackMessage(msg jetstream.Msg, startTime time.Time, t, a, j string, attempt uint64) {
+	err := msg.Ack()
+	if err != nil {
+		logger.Info("DocProcessor", "Failed to ack msg: %v", err)
+		return
+	}
+	natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+		Component:  "DocProcessor",
+		Event:      "ACKNOWLEDGED",
+		Stream:     "WORKERS",
+		Subject:    msg.Subject(),
+		Consumer:   "doc_processor_workers",
+		TenantID:   t,
+		AppID:      a,
+		JobID:      j,
+		Attempt:    attempt,
+		DurationMs: time.Since(startTime).Milliseconds(),
+	})
+}
+
+func buildDocsStructResult(docs []*pb.ProcessedDocument) (*structpb.Struct, error) {
+	jsonBytes, err := json.Marshal(docs)
+	if err != nil {
+		return nil, err
+	}
+	var structResult structpb.Struct
+	jsonString := fmt.Sprintf(`{"documents": %s}`, string(jsonBytes))
+	err = protojson.Unmarshal([]byte(jsonString), &structResult)
+	if err != nil {
+		logger.Warn("DocProcessor", "Failed to unmarshal docs to structpb.Struct: %v", err)
+		return nil, nil
+	}
+	return &structResult, nil
+}
+
+func (s *NatsServer) publishReply(ctx context.Context, msg jetstream.Msg, replySubj string, resp *pb.PerformActionResponse, startTime time.Time, t, a, j string, attempt uint64) error {
+	if replySubj == "" {
+		return nil
+	}
+	respBytes, err := proto.Marshal(resp)
+	if err != nil {
+		logger.Info("DocProcessor", "Failed to marshal response: %v", err)
+		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+			Component:  "DocProcessor",
+			Event:      "NACKED",
+			Stream:     "WORKERS",
+			Subject:    msg.Subject(),
+			Consumer:   "doc_processor_workers",
+			TenantID:   t,
+			AppID:      a,
+			JobID:      j,
+			Attempt:    attempt,
+			DurationMs: time.Since(startTime).Milliseconds(),
+			Error:      err,
+		})
+		msg.NakWithDelay(5 * time.Second)
+		return err
+	}
+
+	_, pubErr := s.js.Publish(ctx, replySubj, respBytes)
+	natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+		Component: "DocProcessor",
+		Event:     "ENQUEUED",
+		Stream:    "ORCHESTRATOR_RESPONSES",
+		Subject:   replySubj,
+		TenantID:  t,
+		AppID:     a,
+		JobID:     j,
+		SizeBytes: len(respBytes),
+		Error:     pubErr,
+	})
+	if pubErr != nil {
+		logger.Info("DocProcessor", "Failed to publish reply to NATS %s: %v", replySubj, pubErr)
+		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+			Component:  "DocProcessor",
+			Event:      "NACKED",
+			Stream:     "WORKERS",
+			Subject:    msg.Subject(),
+			Consumer:   "doc_processor_workers",
+			TenantID:   t,
+			AppID:      a,
+			JobID:      j,
+			Attempt:    attempt,
+			DurationMs: time.Since(startTime).Milliseconds(),
+			Error:      pubErr,
+		})
+		msg.NakWithDelay(5 * time.Second)
+		return pubErr
+	}
+	return nil
+}
+
+func (s *NatsServer) runAckWindowExtender(ctx context.Context, msg jetstream.Msg, done chan struct{}, t, a, j string, attempt uint64) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			err := msg.InProgress()
+			if err == nil {
+				natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+					Component: "DocProcessor",
+					Event:     "IN_PROGRESS",
+					Stream:    "WORKERS",
+					Subject:   msg.Subject(),
+					Consumer:  "doc_processor_workers",
+					TenantID:  t,
+					AppID:     a,
+					JobID:     j,
+					Attempt:   attempt,
+				})
+			}
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *NatsServer) handleProcessingError(ctx context.Context, msg jetstream.Msg, replySubj string, err error, startTime time.Time, t, a, j string, attempt uint64) {
+	logger.Info("DocProcessor", "Error processing document for JobID %s: %v", j, err)
+	resp := &pb.PerformActionResponse{
+		Success:          false,
+		IsTransientError: true,
+		ErrorContract: &pb.ErrorContract{
+			Code:    "DOCUMENT_PROCESSING_FAILED",
+			Source:  "document_processing_service",
+			Message: err.Error(),
+		},
+	}
+	pubErr := s.publishReply(ctx, msg, replySubj, resp, startTime, t, a, j, attempt)
+	if pubErr != nil {
+		return
+	}
+	s.ackMessage(msg, startTime, t, a, j, attempt)
+}
+
 func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	startTime := time.Now()
 	meta, _ := msg.Metadata()
@@ -87,7 +256,8 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	logger.Info("DocProcessor", "Received document processing request on subject: %s", msg.Subject())
 
 	var req pb.ExecuteWorkflowNodeRequest
-	if err := proto.Unmarshal(msg.Data(), &req); err != nil {
+	err := proto.Unmarshal(msg.Data(), &req)
+	if err != nil {
 		logger.Info("DocProcessor", "Failed to unmarshal ExecuteWorkflowNodeRequest: %v", err)
 		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 			Component:  "DocProcessor",
@@ -123,92 +293,24 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	})
 
 	var replySubj string
-	if headers := msg.Headers(); headers != nil {
+	headers := msg.Headers()
+	if headers != nil {
 		replySubj = headers.Get("Reply-Subject")
 	}
 
 	// Extend ack window while processing
 	done := make(chan struct{})
 	defer close(done)
-	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := msg.InProgress(); err == nil {
-					natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-						Component: "DocProcessor",
-						Event:     "IN_PROGRESS",
-						Stream:    "WORKERS",
-						Subject:   msg.Subject(),
-						Consumer:  "doc_processor_workers",
-						TenantID:  t,
-						AppID:     a,
-						JobID:     j,
-						Attempt:   attempt,
-					})
-				}
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	go s.runAckWindowExtender(ctx, msg, done, t, a, j, attempt)
 
 	docUri := parser.GetDocumentUri()
 
 	if docUri == "" {
 		logger.Info("DocProcessor", "StorageContract not provided or DocumentUri is empty")
-
-		if replySubj != "" {
-			resp := &pb.PerformActionResponse{
-				Success: false,
-				ErrorContract: &pb.ErrorContract{
-					Code:    "MISSING_DOCUMENT_URI",
-					Source:  "document_processing_service",
-					Message: "StorageContract.DocumentUri must be provided",
-				},
-			}
-			respBytes, err := proto.Marshal(resp)
-			if err != nil {
-				logger.Warn("DocProcessor", "Failed to marshal error response: %v", err)
-			} else {
-				_, pubErr := s.js.Publish(ctx, replySubj, respBytes)
-				natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-					Component: "DocProcessor",
-					Event:     "ENQUEUED",
-					Stream:    "ORCHESTRATOR_RESPONSES",
-					Subject:   replySubj,
-					TenantID:  t,
-					AppID:     a,
-					JobID:     j,
-					SizeBytes: len(respBytes),
-					Error:     pubErr,
-				})
-			}
-		}
-
-		durationMs := time.Since(startTime).Milliseconds()
-		if err := msg.Ack(); err == nil {
-			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-				Component:  "DocProcessor",
-				Event:      "ACKNOWLEDGED",
-				Stream:     "WORKERS",
-				Subject:    msg.Subject(),
-				Consumer:   "doc_processor_workers",
-				TenantID:   t,
-				AppID:      a,
-				JobID:      j,
-				Attempt:    attempt,
-				DurationMs: durationMs,
-			})
-		}
+		s.sendErrorReply(ctx, replySubj, "MISSING_DOCUMENT_URI", "[Step: WORKER_DEQUEUE, URI: unknown] StorageContract.DocumentUri must be provided", t, a, j)
+		s.ackMessage(msg, startTime, t, a, j, attempt)
 		return
 	}
-
-	var resp *pb.PerformActionResponse
 
 	chunkReq := &pb.ChunkDocumentRequest{
 		Identity:          parser.GetIdentity(),
@@ -219,110 +321,19 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 
 	docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
 
-	resp = &pb.PerformActionResponse{
-		Success: err == nil,
-	}
-
 	if err != nil {
-		logger.Info("DocProcessor", "Error processing document for JobID %s: %v", j, err)
-		resp.IsTransientError = true
-		resp.ErrorContract = &pb.ErrorContract{
-			Code:    "DOCUMENT_PROCESSING_FAILED",
-			Source:  "document_processing_service",
-			Message: err.Error(),
-		}
-	} else {
-		logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", j, len(docs))
-		jsonBytes, err := json.Marshal(docs)
-		if err != nil {
-			logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", err)
-			nackTimeoutJson := envutil.MustGetInt("NACK_JSON_TIMEOUT")
-			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-				Component:  "DocProcessor",
-				Event:      "NACKED",
-				Stream:     "WORKERS",
-				Subject:    msg.Subject(),
-				Consumer:   "doc_processor_workers",
-				TenantID:   t,
-				AppID:      a,
-				JobID:      j,
-				Attempt:    attempt,
-				DurationMs: time.Since(startTime).Milliseconds(),
-				Error:      err,
-			})
-			msg.NakWithDelay(time.Duration(nackTimeoutJson) * time.Second)
-			return
-		}
-		var structResult structpb.Struct
-		jsonString := fmt.Sprintf(`{"documents": %s}`, string(jsonBytes))
-		if err := protojson.Unmarshal([]byte(jsonString), &structResult); err == nil {
-			resp.ActionResult = &structResult
-		} else {
-			logger.Warn("DocProcessor", "Failed to unmarshal docs to structpb.Struct: %v", err)
-		}
+		s.handleProcessingError(ctx, msg, replySubj, err, startTime, t, a, j, attempt)
+		return
 	}
 
-	if replySubj != "" {
-		respBytes, err := proto.Marshal(resp)
-		if err != nil {
-			logger.Info("DocProcessor", "Failed to marshal response: %v", err)
-			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-				Component:  "DocProcessor",
-				Event:      "NACKED",
-				Stream:     "WORKERS",
-				Subject:    msg.Subject(),
-				Consumer:   "doc_processor_workers",
-				TenantID:   t,
-				AppID:      a,
-				JobID:      j,
-				Attempt:    attempt,
-				DurationMs: time.Since(startTime).Milliseconds(),
-				Error:      err,
-			})
-			msg.NakWithDelay(5 * time.Second)
-			return
-		}
-
-		_, pubErr := s.js.Publish(ctx, replySubj, respBytes)
-		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-			Component: "DocProcessor",
-			Event:     "ENQUEUED",
-			Stream:    "ORCHESTRATOR_RESPONSES",
-			Subject:   replySubj,
-			TenantID:  t,
-			AppID:     a,
-			JobID:     j,
-			SizeBytes: len(respBytes),
-			Error:     pubErr,
-		})
-		if pubErr != nil {
-			logger.Info("DocProcessor", "Failed to publish reply to NATS %s: %v", replySubj, pubErr)
-			natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-				Component:  "DocProcessor",
-				Event:      "NACKED",
-				Stream:     "WORKERS",
-				Subject:    msg.Subject(),
-				Consumer:   "doc_processor_workers",
-				TenantID:   t,
-				AppID:      a,
-				JobID:      j,
-				Attempt:    attempt,
-				DurationMs: time.Since(startTime).Milliseconds(),
-				Error:      pubErr,
-			})
-			msg.NakWithDelay(5 * time.Second)
-			return
-		}
-	}
-
-	durationMs := time.Since(startTime).Milliseconds()
-	if err := msg.Ack(); err != nil {
-		logger.Info("DocProcessor", "Failed to ack msg: %v", err)
-	} else {
-		logger.Info("DocProcessor", "Successfully acknowledged processing request and replied to %s", replySubj)
+	logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", j, len(docs))
+	structResult, marshalErr := buildDocsStructResult(docs)
+	if marshalErr != nil {
+		logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", marshalErr)
+		nackTimeoutJson := envutil.MustGetInt("NACK_JSON_TIMEOUT")
 		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 			Component:  "DocProcessor",
-			Event:      "ACKNOWLEDGED",
+			Event:      "NACKED",
 			Stream:     "WORKERS",
 			Subject:    msg.Subject(),
 			Consumer:   "doc_processor_workers",
@@ -330,7 +341,22 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 			AppID:      a,
 			JobID:      j,
 			Attempt:    attempt,
-			DurationMs: durationMs,
+			DurationMs: time.Since(startTime).Milliseconds(),
+			Error:      marshalErr,
 		})
+		msg.NakWithDelay(time.Duration(nackTimeoutJson) * time.Second)
+		return
 	}
+
+	resp := &pb.PerformActionResponse{
+		Success:      true,
+		ActionResult: structResult,
+	}
+
+	pubErr := s.publishReply(ctx, msg, replySubj, resp, startTime, t, a, j, attempt)
+	if pubErr != nil {
+		return
+	}
+
+	s.ackMessage(msg, startTime, t, a, j, attempt)
 }

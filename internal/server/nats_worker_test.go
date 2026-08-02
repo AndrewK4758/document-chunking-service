@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"google.golang.org/protobuf/proto"
 )
 
 type mockMsgForTerm struct {
@@ -76,5 +78,34 @@ func TestProcessMessage_InvalidProtobufPayload_CallsTerm(t *testing.T) {
 	}
 	if msg.acked {
 		t.Fatalf("Expected msg.Ack() NOT to be called on invalid protobuf payload")
+	}
+}
+
+func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
+	server := &NatsServer{}
+
+	// Valid ExecuteWorkflowNodeRequest but missing storage/DocumentUri
+	req := &pb.ExecuteWorkflowNodeRequest{
+		StepId: "step-no-uri",
+		Identity: &pb.InfrastructureIdentity{
+			TenantId: "t1",
+			AppId:    "a1",
+			JobId:    "j1",
+		},
+	}
+	b, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatalf("Failed to marshal request: %v", err)
+	}
+
+	msg := &mockMsgForTerm{
+		data:    b,
+		subject: "worker.doc.test",
+	}
+
+	server.processMessage(context.Background(), msg)
+
+	if !msg.acked {
+		t.Fatalf("Expected message to be acknowledged after reporting missing URI error contract")
 	}
 }
