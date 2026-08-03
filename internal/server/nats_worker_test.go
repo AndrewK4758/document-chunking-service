@@ -109,3 +109,39 @@ func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
 		t.Fatalf("Expected message to be acknowledged after reporting missing URI error contract")
 	}
 }
+
+func TestBuildDocsStructResult_PropagatesIsScanned(t *testing.T) {
+	docs := []*pb.ProcessedDocument{
+		{
+			DocumentType:     "classified",
+			RelativeFilePath: "test/scanned.pdf",
+			PageCount:        1,
+			IsScanned:        true,
+		},
+		{
+			DocumentType:     "classified",
+			RelativeFilePath: "test/text.pdf",
+			PageCount:        2,
+			IsScanned:        false,
+		},
+	}
+	res, err := buildDocsStructResult(docs)
+	if err != nil {
+		t.Fatalf("buildDocsStructResult returned unexpected error: %v", err)
+	}
+	if res == nil {
+		t.Fatalf("buildDocsStructResult returned nil struct")
+	}
+	docsValue, ok := res.Fields["documents"]
+	if !ok {
+		t.Fatalf("Expected 'documents' key in result struct")
+	}
+	list := docsValue.GetListValue().GetValues()
+	if len(list) != 2 {
+		t.Fatalf("Expected 2 documents in list, got %d", len(list))
+	}
+	scannedVal := list[0].GetStructValue().Fields["is_scanned"].GetBoolValue()
+	if !scannedVal {
+		t.Errorf("Expected doc 0 is_scanned to be true, got false")
+	}
+}

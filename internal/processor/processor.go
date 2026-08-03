@@ -1,12 +1,19 @@
 package processor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"document_processing_service/internal/archive"
 	"document_processing_service/internal/storage"
@@ -16,6 +23,17 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
+
+var (
+	pdfCpuConfigOnce sync.Once
+)
+
+func getPdfCpuConfig() *model.Configuration {
+	pdfCpuConfigOnce.Do(func() {
+		_ = model.NewDefaultConfiguration()
+	})
+	return model.NewDefaultConfiguration()
+}
 
 type BoundaryDetectionResponse struct {
 	BoundaryPageInSlice int `json:"boundary_page_in_slice"`
@@ -97,7 +115,7 @@ func parseBoundaryResponse(resp *pb.PerformActionResponse) (int, error) {
 	return boundResp.BoundaryPageInSlice, nil
 }
 
-func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, parser *workflowparser.NodeRequestParser, modelChoice pb.ModelChoice, addTrace func(string, string)) (*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, parser *workflowparser.NodeRequestParser, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) (*pb.ProcessedDocument, error) {
 	inputBytes, err := os.ReadFile(pdfPath)
 	if err != nil {
 		addTrace(fmt.Sprintf("Failed to read PDF file %s: %v", filepath.Base(pdfPath), err), "ERROR")
@@ -145,11 +163,12 @@ func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkD
 		DocumentType:     docTypeClassified,
 		RelativeFilePath: relativePath,
 		PageCount:        int32(pageCount),
+		IsScanned:        isScanned,
 	}, nil
 }
 
-func (p *ChunkingProcessor) processSingleDocAsSlice(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, parser *workflowparser.NodeRequestParser, modelChoice pb.ModelChoice, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
-	doc, err := p.processSingleDoc(ctx, req, pdfPath, pageCount, docUri, parser, modelChoice, addTrace)
+func (p *ChunkingProcessor) processSingleDocAsSlice(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, parser *workflowparser.NodeRequestParser, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
+	doc, err := p.processSingleDoc(ctx, req, pdfPath, pageCount, docUri, parser, modelChoice, isScanned, addTrace)
 	if err != nil {
 		return nil, err
 	}
@@ -207,9 +226,9 @@ func (p *ChunkingProcessor) detectBoundaryInSlice(ctx context.Context, req *pb.C
 	return boundaryPageInSlice, nil
 }
 
-func (p *ChunkingProcessor) extractAndUploadChunk(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, startPage int, endPage int, chunkIndex int, extractDir string, docUri string, docTypeChunked string, addTrace func(string, string)) (*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) extractAndUploadChunk(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, startPage int, endPage int, chunkIndex int, extractDir string, docUri string, docTypeChunked string, isScanned bool, addTrace func(string, string)) (*pb.ProcessedDocument, error) {
 	chunkPath := filepath.Join(extractDir, fmt.Sprintf("chunk_%d_%d.pdf", startPage, endPage))
-	err := api.TrimFile(pdfPath, chunkPath, []string{fmt.Sprintf("%d-%d", startPage, endPage)}, model.NewDefaultConfiguration())
+	err := api.TrimFile(pdfPath, chunkPath, []string{fmt.Sprintf("%d-%d", startPage, endPage)}, getPdfCpuConfig())
 	if err != nil {
 		addTrace(fmt.Sprintf("Failed to extract chunk pages %d-%d: %v", startPage, endPage, err), "ERROR")
 		return nil, fmt.Errorf("[Step: SLICING, URI: %s] failed to extract chunk: %w", docUri, err)
@@ -242,15 +261,21 @@ func (p *ChunkingProcessor) extractAndUploadChunk(ctx context.Context, req *pb.C
 		DocumentType:     docTypeChunked,
 		RelativeFilePath: relativePath,
 		PageCount:        int32(endPage - startPage + 1),
+		IsScanned:        isScanned,
 	}, nil
 }
 
-func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, parser *workflowparser.NodeRequestParser, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, parser *workflowparser.NodeRequestParser, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
 	addTrace(fmt.Sprintf("%s exceeds max pages (%d), engaging sliding window splitter...", filepath.Base(pdfPath), maxPagesBeforeSplit), "INFO")
 
 	slidingWindowSize := int(parser.GetDocumentProcessorContract().GetSlidingWindowSize())
 	if slidingWindowSize <= 0 {
 		return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] SlidingWindowSize must be configured in DocumentProcessorContract and greater than 0", docUri)
+	}
+
+	docTypeChunked := parser.GetDocumentProcessorContract().GetDocTypeChunked()
+	if docTypeChunked == "" {
+		return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] DocTypeChunked must be configured in DocumentProcessorContract", docUri)
 	}
 
 	currentDocStart := 1
@@ -268,7 +293,7 @@ func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDo
 		addTrace(fmt.Sprintf("Evaluating slice pages %d-%d for boundaries", windowStart, windowEnd), "INFO")
 
 		sliceTempPath := filepath.Join(extractDir, fmt.Sprintf("slice_%d_%d.pdf", windowStart, windowEnd))
-		err = api.TrimFile(pdfPath, sliceTempPath, []string{fmt.Sprintf("%d-%d", windowStart, windowEnd)}, model.NewDefaultConfiguration())
+		err = api.TrimFile(pdfPath, sliceTempPath, []string{fmt.Sprintf("%d-%d", windowStart, windowEnd)}, getPdfCpuConfig())
 		if err != nil {
 			addTrace(fmt.Sprintf("Failed to extract slice pages %d-%d: %v", windowStart, windowEnd, err), "ERROR")
 			windowStart = windowEnd + 1
@@ -280,11 +305,6 @@ func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDo
 
 		if sliceErr != nil {
 			return nil, sliceErr
-		}
-
-		docTypeChunked := parser.GetDocumentProcessorContract().GetDocTypeChunked()
-		if docTypeChunked == "" {
-			return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] DocTypeChunked must be configured in DocumentProcessorContract", docUri)
 		}
 
 		if boundaryPageInSlice <= 0 {
@@ -304,7 +324,7 @@ func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDo
 		}
 
 		// Valid boundary split!
-		chunkDoc, chunkErr := p.extractAndUploadChunk(ctx, req, pdfPath, currentDocStart, absoluteBoundary-1, chunkIndex, extractDir, docUri, docTypeChunked, addTrace)
+		chunkDoc, chunkErr := p.extractAndUploadChunk(ctx, req, pdfPath, currentDocStart, absoluteBoundary-1, chunkIndex, extractDir, docUri, docTypeChunked, isScanned, addTrace)
 		if chunkErr != nil {
 			return nil, chunkErr
 		}
@@ -319,12 +339,7 @@ func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDo
 		return processedDocs, nil
 	}
 
-	docTypeChunked := parser.GetDocumentProcessorContract().GetDocTypeChunked()
-	if docTypeChunked == "" {
-		return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] DocTypeChunked must be configured in DocumentProcessorContract", docUri)
-	}
-
-	chunkDoc, chunkErr := p.extractAndUploadChunk(ctx, req, pdfPath, currentDocStart, pageCount, chunkIndex, extractDir, docUri, docTypeChunked, addTrace)
+	chunkDoc, chunkErr := p.extractAndUploadChunk(ctx, req, pdfPath, currentDocStart, pageCount, chunkIndex, extractDir, docUri, docTypeChunked, isScanned, addTrace)
 	if chunkErr != nil {
 		return nil, chunkErr
 	}
@@ -333,12 +348,12 @@ func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDo
 	return processedDocs, nil
 }
 
-func (p *ChunkingProcessor) processDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, parser *workflowparser.NodeRequestParser, modelChoice pb.ModelChoice, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) processDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, parser *workflowparser.NodeRequestParser, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
 	isSingleDoc := pageCount <= maxPagesBeforeSplit
 	if isSingleDoc {
-		return p.processSingleDocAsSlice(ctx, req, pdfPath, pageCount, docUri, parser, modelChoice, addTrace)
+		return p.processSingleDocAsSlice(ctx, req, pdfPath, pageCount, docUri, parser, modelChoice, isScanned, addTrace)
 	}
-	return p.processLargeDoc(ctx, req, pdfPath, pageCount, maxPagesBeforeSplit, extractDir, docUri, parser, addTrace)
+	return p.processLargeDoc(ctx, req, pdfPath, pageCount, maxPagesBeforeSplit, extractDir, docUri, parser, isScanned, addTrace)
 }
 
 func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDocumentRequest) ([]*pb.ProcessedDocument, []*pb.ChunkingTraceEvent, error) {
@@ -388,8 +403,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 		return nil, traceEvents, fmt.Errorf("[Step: JIT_FETCH, URI: %s] failed to fetch from store: %w", docUri, err)
 	}
 
-	extractDir := filepath.Join(os.TempDir(), fmt.Sprintf("chunking_job_%s_%d", req.GetIdentity().GetJobId(), time.Now().UnixNano()))
-	err = os.MkdirAll(extractDir, 0755)
+	extractDir, err := os.MkdirTemp("", fmt.Sprintf("chunking_job_%s_*", req.GetIdentity().GetJobId()))
 	if err != nil {
 		return nil, traceEvents, fmt.Errorf("[Step: TEMP_WRITE, URI: %s] failed to create extraction directory: %w", docUri, err)
 	}
@@ -432,7 +446,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			return nil, traceEvents, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] DocTypeCorrupted must be configured in DocumentProcessorContract", docUri)
 		}
 
-		err = api.ValidateFile(pdfPath, model.NewDefaultConfiguration())
+		err = api.ValidateFile(pdfPath, getPdfCpuConfig())
 		if err != nil {
 			addTrace(fmt.Sprintf("PDF Validation failed for %s (possible encryption or corruption): %v", filepath.Base(pdfPath), err), "WARN")
 			processedDocs = append(processedDocs, &pb.ProcessedDocument{
@@ -457,19 +471,29 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 		}
 
 		// Probe text vs OCR
-		err = api.ExtractContentFile(pdfPath, extractDir, []string{"1"}, model.NewDefaultConfiguration())
-		isStructuredText := err == nil
+		isScanned, detectErr := detectIsScannedPDF(pdfPath)
+		if detectErr != nil {
+			addTrace(fmt.Sprintf("Failed to detect PDF type for %s: %v", filepath.Base(pdfPath), detectErr), "WARN")
+			isScanned = true
+		}
+
+		if req.OriginalRequest != nil {
+			if req.OriginalRequest.Metadata == nil {
+				req.OriginalRequest.Metadata = make(map[string]string)
+			}
+			req.OriginalRequest.Metadata["IsScanned"] = strconv.FormatBool(isScanned)
+		}
 
 		modelChoice := pb.ModelChoice_MODEL_CHOICE_OCR
-		if isStructuredText {
+		if !isScanned {
 			modelChoice = pb.ModelChoice_MODEL_CHOICE_CLASSIFICATION
 			addTrace(fmt.Sprintf("%s has embedded text. Routing to Standard LLM.", filepath.Base(pdfPath)), "INFO")
 		}
-		if !isStructuredText {
+		if isScanned {
 			addTrace(fmt.Sprintf("%s appears to be a scanned document. Routing to OCR Vision LLM.", filepath.Base(pdfPath)), "INFO")
 		}
 
-		docs, docErr := p.processDoc(ctx, req, pdfPath, pageCount, maxPagesBeforeSplit, extractDir, docUri, parser, modelChoice, addTrace)
+		docs, docErr := p.processDoc(ctx, req, pdfPath, pageCount, maxPagesBeforeSplit, extractDir, docUri, parser, modelChoice, isScanned, addTrace)
 		if docErr != nil {
 			return nil, traceEvents, docErr
 		}
@@ -477,4 +501,222 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	}
 
 	return processedDocs, traceEvents, nil
+}
+
+var (
+	literalStrRegex = regexp.MustCompile(`(?s)\((.*?)\)\s*(?:Tj|'|")`)
+	hexStrRegex     = regexp.MustCompile(`(?s)<([0-9a-fA-F\s]+)>\s*(?:Tj|'|")`)
+	arrayTJRegex    = regexp.MustCompile(`(?s)\[(.*?)\]\s*TJ`)
+	innerLitRegex   = regexp.MustCompile(`(?s)\((.*?)\)`)
+	innerHexRegex   = regexp.MustCompile(`(?s)<([0-9a-fA-F\s]+)>`)
+)
+
+func hasPrintableText(s string) bool {
+	for _, r := range s {
+		if !unicode.IsSpace(r) && unicode.IsPrint(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func unescapePDFLiteralString(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.Grow(len(s))
+
+	n := len(s)
+	for i := 0; i < n; {
+		b := s[i]
+		if b != '\\' {
+			sb.WriteByte(b)
+			i++
+			continue
+		}
+
+		if i+1 >= n {
+			break
+		}
+
+		next := s[i+1]
+		switch next {
+		case 'n':
+			sb.WriteByte('\n')
+			i += 2
+		case 'r':
+			sb.WriteByte('\r')
+			i += 2
+		case 't':
+			sb.WriteByte('\t')
+			i += 2
+		case 'b':
+			sb.WriteByte('\b')
+			i += 2
+		case 'f':
+			sb.WriteByte('\f')
+			i += 2
+		case '(':
+			sb.WriteByte('(')
+			i += 2
+		case ')':
+			sb.WriteByte(')')
+			i += 2
+		case '\\':
+			sb.WriteByte('\\')
+			i += 2
+		case '\r':
+			if i+2 < n && s[i+2] == '\n' {
+				i += 3
+				continue
+			}
+			i += 2
+		case '\n':
+			i += 2
+		default:
+			if next >= '0' && next <= '7' {
+				var val int
+				var digits int
+				for j := 0; j < 3 && i+1+j < n; j++ {
+					c := s[i+1+j]
+					if c < '0' || c > '7' {
+						break
+					}
+					val = val*8 + int(c-'0')
+					digits++
+				}
+				sb.WriteByte(byte(val))
+				i += 1 + digits
+				continue
+			}
+			sb.WriteByte(next)
+			i += 2
+		}
+	}
+
+	return sb.String()
+}
+
+func hexToASCII(hexStr string) string {
+	var sb strings.Builder
+	cleanHex := strings.ReplaceAll(hexStr, " ", "")
+	cleanHex = strings.ReplaceAll(cleanHex, "\r", "")
+	cleanHex = strings.ReplaceAll(cleanHex, "\n", "")
+	cleanHex = strings.ReplaceAll(cleanHex, "\t", "")
+
+	for i := 0; i+1 < len(cleanHex); i += 2 {
+		var val byte
+		fmt.Sscanf(cleanHex[i:i+2], "%02x", &val)
+		sb.WriteByte(val)
+	}
+	return sb.String()
+}
+
+func isPDFTokenChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+func checkBlockForTextOperators(block []byte) bool {
+	blockStr := string(block)
+
+	checkMatches := func(matches [][]string, transform func(string) string) bool {
+		for _, match := range matches {
+			if len(match) > 1 && hasPrintableText(transform(match[1])) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if checkMatches(literalStrRegex.FindAllStringSubmatch(blockStr, -1), unescapePDFLiteralString) {
+		return true
+	}
+	if checkMatches(hexStrRegex.FindAllStringSubmatch(blockStr, -1), hexToASCII) {
+		return true
+	}
+
+	tjMatches := arrayTJRegex.FindAllStringSubmatch(blockStr, -1)
+	for _, match := range tjMatches {
+		if len(match) > 1 {
+			arrContent := match[1]
+			if checkMatches(innerLitRegex.FindAllStringSubmatch(arrContent, -1), unescapePDFLiteralString) {
+				return true
+			}
+			if checkMatches(innerHexRegex.FindAllStringSubmatch(arrContent, -1), hexToASCII) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func containsStructuredText(stream []byte) bool {
+	btIdx := 0
+	for {
+		relBT := bytes.Index(stream[btIdx:], []byte("BT"))
+		if relBT == -1 {
+			break
+		}
+		absBT := btIdx + relBT
+
+		if absBT > 0 {
+			prev := stream[absBT-1]
+			if isPDFTokenChar(prev) {
+				btIdx = absBT + 2
+				continue
+			}
+		}
+		if absBT+2 < len(stream) {
+			next := stream[absBT+2]
+			if isPDFTokenChar(next) {
+				btIdx = absBT + 2
+				continue
+			}
+		}
+
+		relET := bytes.Index(stream[absBT+2:], []byte("ET"))
+		if relET == -1 {
+			relET = len(stream) - (absBT + 2)
+		}
+		absET := absBT + 2 + relET
+
+		block := stream[absBT+2 : absET]
+		btIdx = absET + 2
+
+		if checkBlockForTextOperators(block) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func detectIsScannedPDF(pdfPath string) (bool, error) {
+	if pdfPath == "" {
+		return false, fmt.Errorf("pdfPath cannot be empty")
+	}
+
+	f, err := os.Open(pdfPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to open PDF file %s for scan detection: %w", pdfPath, err)
+	}
+	defer f.Close()
+
+	var streamBuf bytes.Buffer
+	conf := getPdfCpuConfig()
+	err = api.ExtractContent(f, []string{"1"}, func(r io.Reader, pageNr int) error {
+		_, readErr := io.Copy(&streamBuf, r)
+		return readErr
+	}, conf)
+
+	if err != nil {
+		return false, fmt.Errorf("failed to extract page 1 content stream from %s: %w", pdfPath, err)
+	}
+
+	hasText := containsStructuredText(streamBuf.Bytes())
+	isScanned := !hasText
+	return isScanned, nil
 }

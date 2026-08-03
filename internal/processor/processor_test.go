@@ -288,3 +288,294 @@ func TestProcessZipFile_EnrichedErrorFormat(t *testing.T) {
 		t.Errorf("Expected error prefix %q, got %q", expectedPrefix, err.Error())
 	}
 }
+
+// syntheticTextPDF is a valid minimal 1-page PDF containing text stream operators (BT ... ET and Tj)
+const syntheticTextPDF = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 612 792] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 44 >>
+stream
+BT
+/F1 12 Tf
+100 700 Td
+(Hello World) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000236 00000 n 
+0000000305 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+399
+%%EOF`
+
+// syntheticScannedPDF is a valid minimal 1-page PDF containing an image XObject (/Im1 Do) and NO text operators
+const syntheticScannedPDF = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 6 0 R >> >> /MediaBox [0 0 612 792] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< >>
+endobj
+5 0 obj
+<< /Length 17 >>
+stream
+q
+1 0 0 1 0 0 cm
+/Im1 Do
+Q
+endstream
+endobj
+6 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>
+stream
+ÿÿÿ
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000234 00000 n 
+0000000255 00000 n 
+0000000322 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+460
+%%EOF`
+
+func createSyntheticPDF(t *testing.T, dir string, filename string, content string) string {
+	t.Helper()
+	filePath := filepath.Join(dir, filename)
+	err := os.WriteFile(filePath, []byte(content), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create synthetic PDF %s: %v", filename, err)
+	}
+	return filePath
+}
+
+func TestDetectIsScannedPDF(t *testing.T) {
+	tempDir := t.TempDir()
+	textPdfPath := createSyntheticPDF(t, tempDir, "text.pdf", syntheticTextPDF)
+	scannedPdfPath := createSyntheticPDF(t, tempDir, "scanned.pdf", syntheticScannedPDF)
+	corruptedPath := filepath.Join(tempDir, "corrupted.pdf")
+	_ = os.WriteFile(corruptedPath, []byte("invalid pdf content header"), 0644)
+
+	tests := []struct {
+		name          string
+		filePath      string
+		wantIsScanned bool
+		wantErr       bool
+	}{
+		{
+			name:          "StructuredTextPDF_ReturnsFalse",
+			filePath:      textPdfPath,
+			wantIsScanned: false,
+			wantErr:       false,
+		},
+		{
+			name:          "ScannedImagePDF_ReturnsTrue",
+			filePath:      scannedPdfPath,
+			wantIsScanned: true,
+			wantErr:       false,
+		},
+		{
+			name:          "CorruptedFile_ReturnsError",
+			filePath:      corruptedPath,
+			wantIsScanned: false,
+			wantErr:       true,
+		},
+		{
+			name:          "NonExistentFile_ReturnsError",
+			filePath:      filepath.Join(tempDir, "does_not_exist.pdf"),
+			wantIsScanned: false,
+			wantErr:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotIsScanned, err := detectIsScannedPDF(tt.filePath)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("detectIsScannedPDF(%s) error = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+			if !tt.wantErr && gotIsScanned != tt.wantIsScanned {
+				t.Errorf("detectIsScannedPDF(%s) gotIsScanned = %v, want %v", tt.name, gotIsScanned, tt.wantIsScanned)
+			}
+		})
+	}
+}
+
+func TestProcessZipFile_PDFTypeDetection(t *testing.T) {
+	tempDir := t.TempDir()
+	zipPath := filepath.Join(tempDir, "mixed_type.zip")
+
+	createTestZip(t, map[string]string{
+		"text_doc.pdf":    syntheticTextPDF,
+		"scanned_doc.pdf": syntheticScannedPDF,
+	}, zipPath)
+
+	store := &mockStorage{basePath: tempDir}
+	zipBytes, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("Failed to read test zip: %v", err)
+	}
+
+	chunker := NewChunkingProcessor(nil, store)
+	req := &pb.ExecuteWorkflowNodeRequest{
+		Storage: &pb.StorageContract{DocumentUri: "mixed_type.zip"},
+		DocumentProcessor: &pb.DocumentProcessorContract{
+			MaxPagesBeforeSplit: 10,
+			SlidingWindowSize:   5,
+			DocTypeCorrupted:    "corrupted",
+			ActionNameClassify:  "action",
+			DocTypeClassified:   "classified",
+			ActionNameBoundary:  "boundary",
+			DocTypeChunked:     "chunked",
+		},
+	}
+	docs, traces, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
+		RawFileBytes:    zipBytes,
+		OriginalRequest: req,
+	})
+	if err != nil {
+		t.Fatalf("ProcessZipFile failed: %v", err)
+	}
+
+	if len(docs) != 2 {
+		t.Fatalf("Expected 2 processed documents, got %d", len(docs))
+	}
+
+	for _, doc := range docs {
+		if strings.Contains(doc.RelativeFilePath, "text_doc") {
+			if doc.IsScanned {
+				t.Errorf("Expected text_doc.pdf to have IsScanned = false, got true")
+			}
+		} else if strings.Contains(doc.RelativeFilePath, "scanned_doc") {
+			if !doc.IsScanned {
+				t.Errorf("Expected scanned_doc.pdf to have IsScanned = true, got false")
+			}
+		}
+	}
+
+	if req.Metadata == nil || req.Metadata["IsScanned"] == "" {
+		t.Errorf("Expected req.OriginalRequest.Metadata['IsScanned'] to be set")
+	}
+
+	var foundTextTrace, foundScannedTrace bool
+	for _, tr := range traces {
+		if strings.Contains(tr.Message, "has embedded text. Routing to Standard LLM.") {
+			foundTextTrace = true
+		}
+		if strings.Contains(tr.Message, "appears to be a scanned document. Routing to OCR Vision LLM.") {
+			foundScannedTrace = true
+		}
+	}
+	if !foundTextTrace {
+		t.Errorf("Trace events missing embedded text routing message")
+	}
+	if !foundScannedTrace {
+		t.Errorf("Trace events missing scanned document routing message")
+	}
+}
+
+func TestUnescapePDFLiteralString(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "EmptyString",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "PlainString",
+			input:    "Hello World",
+			expected: "Hello World",
+		},
+		{
+			name:     "StandardEscapes",
+			input:    `\n\r\t\b\f\(\)\\`,
+			expected: "\n\r\t\b\f()\\",
+		},
+		{
+			name:     "Octal1Digit",
+			input:    `\0`,
+			expected: "\x00",
+		},
+		{
+			name:     "Octal2Digits",
+			input:    `\12`,
+			expected: "\n",
+		},
+		{
+			name:     "Octal3Digits",
+			input:    `\101`,
+			expected: "A",
+		},
+		{
+			name:     "OctalFollowedByNonOctal",
+			input:    `\12X`,
+			expected: "\nX",
+		},
+		{
+			name:     "LineContinuationCRLF",
+			input:    "line1\\\r\nline2",
+			expected: "line1line2",
+		},
+		{
+			name:     "LineContinuationLF",
+			input:    "line1\\\nline2",
+			expected: "line1line2",
+		},
+		{
+			name:     "UnknownEscapeSequence",
+			input:    `\z`,
+			expected: "z",
+		},
+		{
+			name:     "TrailingBackslash",
+			input:    `abc\`,
+			expected: "abc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unescapePDFLiteralString(tt.input)
+			if got != tt.expected {
+				t.Errorf("unescapePDFLiteralString(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
