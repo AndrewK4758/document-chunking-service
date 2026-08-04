@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // mockStorage provides a dummy local disk storage for unit tests
@@ -64,19 +65,22 @@ func TestChunkDocument_Success(t *testing.T) {
 	}, zipPath)
 
 	zipBytes, _ := os.ReadFile(zipPath)
+	payload1, _ := structpb.NewStruct(map[string]interface{}{
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+		"action_name_classify":  "action",
+		"doc_type_classified":   "classified",
+		"action_name_boundary":  "boundary",
+		"doc_type_chunked":     "chunked",
+	})
 	req := &pb.ChunkDocumentRequest{
-		Identity:     &pb.InfrastructureIdentity{JobId: "job_123"},
+		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_123"},
 		RawFileBytes: zipBytes,
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-				ActionNameClassify: "action",
-				DocTypeClassified: "classified",
-				ActionNameBoundary: "boundary",
-				DocTypeChunked: "chunked",
-			},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_123"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload1,
 		},
 	}
 
@@ -99,15 +103,18 @@ func TestChunkDocument_Failure(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	srv := NewDocumentProcessingServer(nil, store)
 
+	payload2, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "nonexistent/path/to/bad.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+	})
 	req := &pb.ChunkDocumentRequest{
-		Identity: &pb.InfrastructureIdentity{JobId: "job_bad"},
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "nonexistent/path/to/bad.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-			},
+		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_bad"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_bad"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload2,
 		},
 	}
 
@@ -133,8 +140,14 @@ func TestChunkDocument_Failure(t *testing.T) {
 func TestChunkDocument_EmptyRequest(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, nil)
 
+	payload3, _ := structpb.NewStruct(map[string]interface{}{})
 	req := &pb.ChunkDocumentRequest{
-		Identity: &pb.InfrastructureIdentity{JobId: "job_empty"},
+		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_empty"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_empty"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload3,
+		},
 	}
 
 	mockStream := &mockChunkDocumentServer{req: req}

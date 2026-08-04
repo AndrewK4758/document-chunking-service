@@ -18,9 +18,9 @@ import (
 	"document_processing_service/internal/storage"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"github.com/AndrewK4758/shared_utils/identityparser"
 	"github.com/AndrewK4758/shared_utils/logger"
 	"github.com/AndrewK4758/shared_utils/natsutil"
-	"github.com/AndrewK4758/shared_utils/workflowparser"
 )
 
 type NatsServer struct {
@@ -255,10 +255,10 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 
 	logger.Info("DocProcessor", "Received document processing request on subject: %s", msg.Subject())
 
-	var req pb.ExecuteWorkflowNodeRequest
+	var req pb.ExecuteTaskRequest
 	err := proto.Unmarshal(msg.Data(), &req)
 	if err != nil {
-		logger.Info("DocProcessor", "Failed to unmarshal ExecuteWorkflowNodeRequest: %v", err)
+		logger.Info("DocProcessor", "Failed to unmarshal ExecuteTaskRequest: %v", err)
 		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 			Component:  "DocProcessor",
 			Event:      "TERMINATED",
@@ -276,8 +276,68 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	parser := workflowparser.NewNodeRequestParser(&req)
-	t, a, j := parser.ExtractIdentity()
+	if err := identityparser.NewIdentityParser(req.GetIdentity()).Validate(true); err != nil {
+		logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED: invalid identity - %v", err)
+		headers := msg.Headers()
+		var replySubj string
+		if headers != nil {
+			replySubj = headers.Get("Reply-Subject")
+		}
+		if replySubj != "" {
+			s.sendErrorReply(ctx, replySubj, "INVALID_IDENTITY", err.Error(), "", "", "")
+		}
+		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+			Component:  "DocProcessor",
+			Event:      "TERMINATED",
+			Stream:     "WORKERS",
+			Subject:    msg.Subject(),
+			Consumer:   "doc_processor_workers",
+			TenantID:   "default",
+			AppID:      "default",
+			JobID:      "default",
+			Attempt:    attempt,
+			DurationMs: time.Since(startTime).Milliseconds(),
+			Error:      err,
+		})
+		msg.Term()
+		return
+	}
+
+	if req.GetTaskSubject() == "" {
+		err := fmt.Errorf("missing required TaskSubject")
+		logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED: %v", err)
+		headers := msg.Headers()
+		var replySubj string
+		if headers != nil {
+			replySubj = headers.Get("Reply-Subject")
+		}
+		t := req.GetIdentity().GetTenantId()
+		a := req.GetIdentity().GetAppId()
+		j := req.GetIdentity().GetJobId()
+		if replySubj != "" {
+			s.sendErrorReply(ctx, replySubj, "MISSING_TASK_SUBJECT", err.Error(), t, a, j)
+		}
+		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
+			Component:  "DocProcessor",
+			Event:      "TERMINATED",
+			Stream:     "WORKERS",
+			Subject:    msg.Subject(),
+			Consumer:   "doc_processor_workers",
+			TenantID:   t,
+			AppID:      a,
+			JobID:      j,
+			Attempt:    attempt,
+			DurationMs: time.Since(startTime).Milliseconds(),
+			Error:      err,
+		})
+		msg.Term()
+		return
+	}
+
+	identity := req.GetIdentity()
+	t := identity.GetTenantId()
+	a := identity.GetAppId()
+	j := identity.GetJobId()
 
 	natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 		Component: "DocProcessor",
@@ -303,19 +363,33 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	defer close(done)
 	go s.runAckWindowExtender(ctx, msg, done, t, a, j, attempt)
 
-	docUri := parser.GetDocumentUri()
+	var payload map[string]interface{}
+	if req.Payload != nil {
+		payload = req.Payload.AsMap()
+	} else {
+		payload = make(map[string]interface{})
+	}
+
+	reqJson, err := protojson.Marshal(&req)
+	if err == nil {
+		logger.Info("DocProcessor", "DEQUEUED Input Payload: %s", string(reqJson))
+	} else {
+		payloadBytes, _ := json.Marshal(payload)
+		logger.Info("DocProcessor", "DEQUEUED Input Payload: %s", string(payloadBytes))
+	}
+
+	docUri, _ := payload["document_uri"].(string)
 
 	if docUri == "" {
-		logger.Info("DocProcessor", "StorageContract not provided or DocumentUri is empty")
-		s.sendErrorReply(ctx, replySubj, "MISSING_DOCUMENT_URI", "[Step: WORKER_DEQUEUE, URI: unknown] StorageContract.DocumentUri must be provided", t, a, j)
+		logger.Info("DocProcessor", "document_uri is empty")
+		s.sendErrorReply(ctx, replySubj, "MISSING_DOCUMENT_URI", "[Step: WORKER_DEQUEUE, URI: unknown] document_uri must be provided", t, a, j)
 		s.ackMessage(msg, startTime, t, a, j, attempt)
 		return
 	}
 
 	chunkReq := &pb.ChunkDocumentRequest{
-		Identity:          parser.GetIdentity(),
-		StepId:            parser.GetStepId(),
-		DocumentProcessor: parser.GetDocumentProcessorContract(),
+		Identity:          req.GetIdentity(),
+		StepId:            req.GetStepId(),
 		OriginalRequest:   &req,
 	}
 
@@ -351,6 +425,18 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	resp := &pb.PerformActionResponse{
 		Success:      true,
 		ActionResult: structResult,
+	}
+
+	if resp.ActionResult != nil {
+		outBytes, err := protojson.Marshal(resp.ActionResult)
+		if err == nil {
+			logger.Info("DocProcessor", "DISPATCHING ActionResult Output: %s", string(outBytes))
+		} else {
+			outJson, _ := json.Marshal(resp.ActionResult.AsMap())
+			logger.Info("DocProcessor", "DISPATCHING ActionResult Output: %s", string(outJson))
+		}
+	} else {
+		logger.Info("DocProcessor", "DISPATCHING ActionResult Output: {}")
 	}
 
 	pubErr := s.publishReply(ctx, msg, replySubj, resp, startTime, t, a, j, attempt)

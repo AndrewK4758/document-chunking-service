@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type mockFailingStorage struct {
@@ -34,24 +35,24 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		docContract   *pb.DocumentProcessorContract
+		payload       map[string]interface{}
 		expectedError string
 	}{
 		{
 			name: "Missing MaxPagesBeforeSplit",
-			docContract: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 0,
-				SlidingWindowSize:   5,
-				DocTypeCorrupted:    "corrupted",
+			payload: map[string]interface{}{
+				"document_uri":        "test.pdf",
+				"sliding_window_size": float64(5),
+				"doc_type_corrupted":  "corrupted",
 			},
 			expectedError: "MaxPagesBeforeSplit must be configured",
 		},
 		{
 			name: "Missing DocTypeCorrupted",
-			docContract: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize:   5,
-				DocTypeCorrupted:    "",
+			payload: map[string]interface{}{
+				"document_uri":           "test.pdf",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
 			},
 			expectedError: "DocTypeCorrupted must be configured",
 		},
@@ -59,13 +60,15 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			payloadStruct, _ := structpb.NewStruct(tt.payload)
 			// We pass RawFileBytes so fetch succeeds immediately
 			_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 				RawFileBytes: []byte("dummy pdf/zip bytes"),
 				Identity:     &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
-				OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-					Storage:           &pb.StorageContract{DocumentUri: "test.pdf"},
-					DocumentProcessor: tt.docContract,
+				OriginalRequest: &pb.ExecuteTaskRequest{
+					Identity:    &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
+					TaskSubject: "worker.doc.process",
+					Payload:     payloadStruct,
 				},
 			})
 
@@ -83,17 +86,20 @@ func TestAdversarial_ProcessZipFile_ZeroByteRawBytes(t *testing.T) {
 	store := &mockFailingStorage{failFetch: true}
 	chunker := NewChunkingProcessor(nil, store)
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "internal-store://tenant/app/job/doc.pdf",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+	})
 	// Test when raw file bytes is empty slice and storage fetch fails
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		RawFileBytes: []byte{},
 		Identity:     &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "internal-store://tenant/app/job/doc.pdf"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize:   5,
-				DocTypeCorrupted:    "corrupted",
-			},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 
@@ -109,10 +115,15 @@ func TestAdversarial_ProcessZipFile_ContextDoneEarly(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-1*time.Second))
 	defer cancel()
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri": "internal-store://t/a/j1/doc.pdf",
+	})
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "internal-store://t/a/j1/doc.pdf"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 

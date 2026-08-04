@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/AndrewK4758/shared_protos"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type mockStreamWithCounter struct {
@@ -72,15 +73,19 @@ func TestAdversarial_GRPC_StreamSendError(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	srv := NewDocumentProcessingServer(nil, store)
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "nonexistent.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+	})
+
 	req := &pb.ChunkDocumentRequest{
-		Identity: &pb.InfrastructureIdentity{JobId: "job_send_err"},
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "nonexistent.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize:   5,
-				DocTypeCorrupted:    "corrupted",
-			},
+		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_send_err"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_send_err"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	}
 

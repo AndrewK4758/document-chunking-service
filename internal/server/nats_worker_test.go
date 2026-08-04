@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type mockMsgForTerm struct {
@@ -84,14 +85,17 @@ func TestProcessMessage_InvalidProtobufPayload_CallsTerm(t *testing.T) {
 func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
 	server := &NatsServer{}
 
-	// Valid ExecuteWorkflowNodeRequest but missing storage/DocumentUri
-	req := &pb.ExecuteWorkflowNodeRequest{
+	payload, _ := structpb.NewStruct(map[string]interface{}{})
+	// Valid ExecuteTaskRequest but missing document_uri in Payload
+	req := &pb.ExecuteTaskRequest{
 		StepId: "step-no-uri",
 		Identity: &pb.InfrastructureIdentity{
 			TenantId: "t1",
 			AppId:    "a1",
 			JobId:    "j1",
 		},
+		TaskSubject: "worker.doc.process",
+		Payload:     payload,
 	}
 	b, err := proto.Marshal(req)
 	if err != nil {

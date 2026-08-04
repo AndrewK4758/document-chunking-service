@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestChallenger_ParallelDetectionAndGoroutineLeak(t *testing.T) {
@@ -87,31 +88,38 @@ func TestChallenger_ParallelProcessZipFileAndGoroutineLeak(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "parallel.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+		"action_name_classify":  "action",
+		"doc_type_classified":   "classified",
+		"action_name_boundary":  "boundary",
+		"doc_type_chunked":     "chunked",
+	})
+	req := &pb.ExecuteTaskRequest{
+		Identity: &pb.InfrastructureIdentity{
+			TenantId: "t1",
+			AppId:    "a1",
+			JobId:    "job-parallel",
+		},
+		TaskSubject: "worker.doc.process",
+		Payload:     payload,
+	}
+
 	for i := 0; i < concurrency; i++ {
 		go func(idx int) {
 			defer wg.Done()
 			chunker := NewChunkingProcessor(nil, store)
-			req := &pb.ExecuteWorkflowNodeRequest{
-				Storage: &pb.StorageContract{DocumentUri: "parallel.zip"},
-				DocumentProcessor: &pb.DocumentProcessorContract{
-					MaxPagesBeforeSplit: 10,
-					SlidingWindowSize:   5,
-					DocTypeCorrupted:    "corrupted",
-					ActionNameClassify:  "action",
-					DocTypeClassified:   "classified",
-					ActionNameBoundary:  "boundary",
-					DocTypeChunked:     "chunked",
-				},
-				Identity: &pb.InfrastructureIdentity{
-					JobId: "job-parallel",
-				},
-			}
 
 			docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 				RawFileBytes:    zipBytes,
 				OriginalRequest: req,
 				Identity: &pb.InfrastructureIdentity{
-					JobId: "job-parallel",
+					TenantId: "t1",
+					AppId:    "a1",
+					JobId:    "job-parallel",
 				},
 			})
 
@@ -164,23 +172,35 @@ func TestChallenger_TempFileCleanupIsolation(t *testing.T) {
 
 	chunker := NewChunkingProcessor(nil, store)
 
+	cleanupPayload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "cleanup.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+		"action_name_classify":  "action",
+		"doc_type_classified":   "classified",
+		"action_name_boundary":  "boundary",
+		"doc_type_chunked":     "chunked",
+	})
+	cleanupReq := &pb.ExecuteTaskRequest{
+		Identity: &pb.InfrastructureIdentity{
+			TenantId: "t1",
+			AppId:    "a1",
+			JobId:    "job-cleanup",
+		},
+		TaskSubject: "worker.doc.process",
+		Payload:     cleanupPayload,
+	}
+
 	for i := 0; i < 25; i++ {
 		_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-			RawFileBytes: zipBytes,
-			OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-				Storage: &pb.StorageContract{DocumentUri: "cleanup.zip"},
-				DocumentProcessor: &pb.DocumentProcessorContract{
-					MaxPagesBeforeSplit: 10,
-					SlidingWindowSize:   5,
-					DocTypeCorrupted:    "corrupted",
-					ActionNameClassify:  "action",
-					DocTypeClassified:   "classified",
-					ActionNameBoundary:  "boundary",
-					DocTypeChunked:     "chunked",
-				},
-				Identity: &pb.InfrastructureIdentity{JobId: "job-cleanup"},
+			RawFileBytes:    zipBytes,
+			OriginalRequest: cleanupReq,
+			Identity: &pb.InfrastructureIdentity{
+				TenantId: "t1",
+				AppId:    "a1",
+				JobId:    "job-cleanup",
 			},
-			Identity: &pb.InfrastructureIdentity{JobId: "job-cleanup"},
 		})
 		if err != nil {
 			t.Fatalf("ProcessZipFile iteration %d failed: %v", i, err)

@@ -8,8 +8,11 @@ import (
 	"document_processing_service/internal/storage"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"github.com/AndrewK4758/shared_utils/identityparser"
 	"github.com/AndrewK4758/shared_utils/logger"
-	"github.com/AndrewK4758/shared_utils/workflowparser"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type DocumentProcessingServer struct {
@@ -27,11 +30,11 @@ func extractDocUri(req *pb.ChunkDocumentRequest) string {
 	if req == nil {
 		return "unknown"
 	}
-	if req.OriginalRequest == nil {
+	if req.OriginalRequest == nil || req.OriginalRequest.Payload == nil {
 		return "unknown"
 	}
-	parser := workflowparser.NewNodeRequestParser(req.OriginalRequest)
-	uri := parser.GetDocumentUri()
+	payload := req.OriginalRequest.Payload.AsMap()
+	uri, _ := payload["document_uri"].(string)
 	if uri == "" {
 		return "unknown"
 	}
@@ -48,8 +51,19 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 			return fmt.Errorf("failed to receive chunk document request from stream: %w", err)
 		}
 
+		if err := identityparser.NewIdentityParser(req.GetIdentity()).Validate(true); err != nil {
+			logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED (gRPC ChunkDocument): %v", err)
+			return status.Errorf(codes.InvalidArgument, "invalid identity: %v", err)
+		}
+		if req.GetOriginalRequest() != nil && req.GetOriginalRequest().GetTaskSubject() == "" {
+			err := fmt.Errorf("missing required TaskSubject in OriginalRequest")
+			logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED (gRPC ChunkDocument): %v", err)
+			return status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+
 		docUri := extractDocUri(req)
-		logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentUri: %s", req.Identity.JobId, docUri)
+		reqJson, _ := protojson.Marshal(req)
+		logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentUri: %s, Payload: %s", req.Identity.GetJobId(), docUri, string(reqJson))
 
 		docs, traceEvents, err := s.chunker.ProcessZipFile(stream.Context(), req)
 		resp := &pb.ChunkDocumentResponse{

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 
 	pb "github.com/AndrewK4758/shared_protos"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // mockAiClient is a simple mock for the gRPC client
@@ -82,20 +83,24 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "test.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+		"action_name_classify":  "action",
+		"doc_type_classified":   "classified",
+		"action_name_boundary":  "boundary",
+		"doc_type_chunked":     "chunked",
+	})
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		RawFileBytes: zipBytes,
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "test.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-				ActionNameClassify: "action",
-				DocTypeClassified: "classified",
-				ActionNameBoundary: "boundary",
-				DocTypeChunked: "chunked",
-			},
+		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 	if err != nil {
@@ -128,15 +133,19 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 	}
 
 	store := &mockStorage{basePath: tempDir}
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "bad.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+	})
 	chunker := NewChunkingProcessor(nil, store)
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "bad.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-			},
+		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 	if err == nil {
@@ -156,20 +165,24 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "slip.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+		"action_name_classify":  "action",
+		"doc_type_classified":   "classified",
+		"action_name_boundary":  "boundary",
+		"doc_type_chunked":     "chunked",
+	})
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		RawFileBytes: zipBytes,
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "slip.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-				ActionNameClassify: "action",
-				DocTypeClassified: "classified",
-				ActionNameBoundary: "boundary",
-				DocTypeChunked: "chunked",
-			},
+		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 	if err != nil {
@@ -187,15 +200,19 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "dummy.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+	})
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
 		RawFileBytes: []byte("dummy"),
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "dummy.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-			},
+		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 	if err == nil {
@@ -212,14 +229,18 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "missing_from_storage.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+	})
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "missing_from_storage.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-			},
+		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 
@@ -242,17 +263,21 @@ func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	// Create mock AiClient non-nil so sliding window attempts AI call
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":              "multi.zip",
+		"max_pages_before_split":    float64(1),
+		"sliding_window_size":      float64(5),
+		"doc_type_corrupted":       "corrupted",
+		"boundary_detection_prompt": "",
+	})
 	chunker := NewChunkingProcessor(&mockAiClient{}, store)
 	docs, _, _ := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		RawFileBytes: zipBytes,
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{DocumentUri: "multi.zip"},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 1,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-				BoundaryDetectionPrompt: "", // Empty prompt intentionally
-			},
+		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 	// Validate that zip processing completed and handled invalid/dummy PDF gracefully
@@ -266,16 +291,18 @@ func TestProcessZipFile_EnrichedErrorFormat(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "internal-store://tenant/app/job/missing.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+	})
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
-		OriginalRequest: &pb.ExecuteWorkflowNodeRequest{
-			Storage: &pb.StorageContract{
-				DocumentUri: "internal-store://tenant/app/job/missing.zip",
-			},
-			DocumentProcessor: &pb.DocumentProcessorContract{
-				MaxPagesBeforeSplit: 10,
-				SlidingWindowSize: 5,
-				DocTypeCorrupted: "corrupted",
-			},
+		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		OriginalRequest: &pb.ExecuteTaskRequest{
+			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+			TaskSubject: "worker.doc.process",
+			Payload:     payload,
 		},
 	})
 
@@ -448,21 +475,25 @@ func TestProcessZipFile_PDFTypeDetection(t *testing.T) {
 		t.Fatalf("Failed to read test zip: %v", err)
 	}
 
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"document_uri":           "mixed_type.zip",
+		"max_pages_before_split": float64(10),
+		"sliding_window_size":   float64(5),
+		"doc_type_corrupted":    "corrupted",
+		"action_name_classify":  "action",
+		"doc_type_classified":   "classified",
+		"action_name_boundary":  "boundary",
+		"doc_type_chunked":     "chunked",
+	})
 	chunker := NewChunkingProcessor(nil, store)
-	req := &pb.ExecuteWorkflowNodeRequest{
-		Storage: &pb.StorageContract{DocumentUri: "mixed_type.zip"},
-		DocumentProcessor: &pb.DocumentProcessorContract{
-			MaxPagesBeforeSplit: 10,
-			SlidingWindowSize:   5,
-			DocTypeCorrupted:    "corrupted",
-			ActionNameClassify:  "action",
-			DocTypeClassified:   "classified",
-			ActionNameBoundary:  "boundary",
-			DocTypeChunked:     "chunked",
-		},
+	req := &pb.ExecuteTaskRequest{
+		Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
+		TaskSubject: "worker.doc.process",
+		Payload:     payload,
 	}
 	docs, traces, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		RawFileBytes:    zipBytes,
+		Identity:        &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: req,
 	})
 	if err != nil {
@@ -483,10 +514,6 @@ func TestProcessZipFile_PDFTypeDetection(t *testing.T) {
 				t.Errorf("Expected scanned_doc.pdf to have IsScanned = true, got false")
 			}
 		}
-	}
-
-	if req.Metadata == nil || req.Metadata["IsScanned"] == "" {
-		t.Errorf("Expected req.OriginalRequest.Metadata['IsScanned'] to be set")
 	}
 
 	var foundTextTrace, foundScannedTrace bool
