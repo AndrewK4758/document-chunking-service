@@ -74,10 +74,14 @@ func TestAdversarial_GRPC_StreamSendError(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, store)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "nonexistent.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "nonexistent.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+			},
+		},
 	})
 
 	req := &pb.ChunkDocumentRequest{

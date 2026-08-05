@@ -66,13 +66,17 @@ func TestChunkDocument_Success(t *testing.T) {
 
 	zipBytes, _ := os.ReadFile(zipPath)
 	payload1, _ := structpb.NewStruct(map[string]interface{}{
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
-		"action_name_classify":  "action",
-		"doc_type_classified":   "classified",
-		"action_name_boundary":  "boundary",
-		"doc_type_chunked":     "chunked",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+				"action_name_classify":  "action",
+				"doc_type_classified":   "classified",
+				"action_name_boundary":  "boundary",
+				"doc_type_chunked":     "chunked",
+			},
+		},
 	})
 	req := &pb.ChunkDocumentRequest{
 		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_123"},
@@ -104,10 +108,14 @@ func TestChunkDocument_Failure(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, store)
 
 	payload2, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "nonexistent/path/to/bad.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "nonexistent/path/to/bad.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+			},
+		},
 	})
 	req := &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_bad"},
@@ -140,7 +148,11 @@ func TestChunkDocument_Failure(t *testing.T) {
 func TestChunkDocument_EmptyRequest(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, nil)
 
-	payload3, _ := structpb.NewStruct(map[string]interface{}{})
+	payload3, _ := structpb.NewStruct(map[string]interface{}{
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{},
+		},
+	})
 	req := &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_empty"},
 		OriginalRequest: &pb.ExecuteTaskRequest{

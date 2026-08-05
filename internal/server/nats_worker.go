@@ -21,6 +21,7 @@ import (
 	"github.com/AndrewK4758/shared_utils/identityparser"
 	"github.com/AndrewK4758/shared_utils/logger"
 	"github.com/AndrewK4758/shared_utils/natsutil"
+	"github.com/AndrewK4758/shared_utils/workflowparser"
 )
 
 type NatsServer struct {
@@ -276,62 +277,10 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
-	if err := identityparser.NewIdentityParser(req.GetIdentity()).Validate(true); err != nil {
-		logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED: invalid identity - %v", err)
-		headers := msg.Headers()
-		var replySubj string
-		if headers != nil {
-			replySubj = headers.Get("Reply-Subject")
-		}
-		if replySubj != "" {
-			s.sendErrorReply(ctx, replySubj, "INVALID_IDENTITY", err.Error(), "", "", "")
-		}
-		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-			Component:  "DocProcessor",
-			Event:      "TERMINATED",
-			Stream:     "WORKERS",
-			Subject:    msg.Subject(),
-			Consumer:   "doc_processor_workers",
-			TenantID:   "default",
-			AppID:      "default",
-			JobID:      "default",
-			Attempt:    attempt,
-			DurationMs: time.Since(startTime).Milliseconds(),
-			Error:      err,
-		})
-		msg.Term()
-		return
-	}
+	identityparser.NewIdentityParser(req.GetIdentity()).MustValidate(true, "DocProcessorWorker")
 
 	if req.GetTaskSubject() == "" {
-		err := fmt.Errorf("missing required TaskSubject")
-		logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED: %v", err)
-		headers := msg.Headers()
-		var replySubj string
-		if headers != nil {
-			replySubj = headers.Get("Reply-Subject")
-		}
-		t := req.GetIdentity().GetTenantId()
-		a := req.GetIdentity().GetAppId()
-		j := req.GetIdentity().GetJobId()
-		if replySubj != "" {
-			s.sendErrorReply(ctx, replySubj, "MISSING_TASK_SUBJECT", err.Error(), t, a, j)
-		}
-		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
-			Component:  "DocProcessor",
-			Event:      "TERMINATED",
-			Stream:     "WORKERS",
-			Subject:    msg.Subject(),
-			Consumer:   "doc_processor_workers",
-			TenantID:   t,
-			AppID:      a,
-			JobID:      j,
-			Attempt:    attempt,
-			DurationMs: time.Since(startTime).Milliseconds(),
-			Error:      err,
-		})
-		msg.Term()
-		return
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: missing required TaskSubject"))
 	}
 
 	identity := req.GetIdentity()
@@ -378,9 +327,16 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		logger.Info("DocProcessor", "DEQUEUED Input Payload: %s", string(payloadBytes))
 	}
 
-	docUri, _ := payload["document_uri"].(string)
-
-	if docUri == "" {
+	parser := workflowparser.NewTaskRequestParser(&req)
+	parser.MustValidateRootPayloadStrict(j)
+	funcState := parser.MustGetFunctionalState(j)
+	
+	docUriVal, hasDocUri := funcState["document_uri"]
+	if !hasDocUri || docUriVal == nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: document_uri missing from global_state.functional"))
+	}
+	docUri, ok := docUriVal.(string)
+	if !ok || docUri == "" {
 		logger.Info("DocProcessor", "document_uri is empty")
 		s.sendErrorReply(ctx, replySubj, "MISSING_DOCUMENT_URI", "[Step: WORKER_DEQUEUE, URI: unknown] document_uri must be provided", t, a, j)
 		s.ackMessage(msg, startTime, t, a, j, attempt)

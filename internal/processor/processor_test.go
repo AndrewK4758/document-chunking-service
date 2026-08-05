@@ -84,14 +84,18 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "test.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
-		"action_name_classify":  "action",
-		"doc_type_classified":   "classified",
-		"action_name_boundary":  "boundary",
-		"doc_type_chunked":     "chunked",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "test.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+				"action_name_classify":  "action",
+				"doc_type_classified":   "classified",
+				"action_name_boundary":  "boundary",
+				"doc_type_chunked":     "chunked",
+			},
+		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
@@ -134,10 +138,14 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 
 	store := &mockStorage{basePath: tempDir}
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "bad.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "bad.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+			},
+		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
@@ -166,14 +174,18 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "slip.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
-		"action_name_classify":  "action",
-		"doc_type_classified":   "classified",
-		"action_name_boundary":  "boundary",
-		"doc_type_chunked":     "chunked",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "slip.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+				"action_name_classify":  "action",
+				"doc_type_classified":   "classified",
+				"action_name_boundary":  "boundary",
+				"doc_type_chunked":     "chunked",
+			},
+		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
 	docs, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
@@ -201,10 +213,14 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 	cancel() // Cancel immediately
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "dummy.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "dummy.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+			},
+		},
 	})
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
 		RawFileBytes: []byte("dummy"),
@@ -230,10 +246,14 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "missing_from_storage.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "missing_from_storage.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+			},
+		},
 	})
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
@@ -264,11 +284,15 @@ func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
 	zipBytes, _ := os.ReadFile(zipPath)
 	// Create mock AiClient non-nil so sliding window attempts AI call
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":              "multi.zip",
-		"max_pages_before_split":    float64(1),
-		"sliding_window_size":      float64(5),
-		"doc_type_corrupted":       "corrupted",
-		"boundary_detection_prompt": "",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":              "multi.zip",
+				"max_pages_before_split":    float64(1),
+				"sliding_window_size":      float64(5),
+				"doc_type_corrupted":       "corrupted",
+				"boundary_detection_prompt": "",
+			},
+		},
 	})
 	chunker := NewChunkingProcessor(&mockAiClient{}, store)
 	docs, _, _ := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
@@ -292,10 +316,14 @@ func TestProcessZipFile_EnrichedErrorFormat(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "internal-store://tenant/app/job/missing.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "internal-store://tenant/app/job/missing.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+			},
+		},
 	})
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
@@ -476,14 +504,18 @@ func TestProcessZipFile_PDFTypeDetection(t *testing.T) {
 	}
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "mixed_type.zip",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
-		"action_name_classify":  "action",
-		"doc_type_classified":   "classified",
-		"action_name_boundary":  "boundary",
-		"doc_type_chunked":     "chunked",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "mixed_type.zip",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+				"action_name_classify":  "action",
+				"doc_type_classified":   "classified",
+				"action_name_boundary":  "boundary",
+				"doc_type_chunked":     "chunked",
+			},
+		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
 	req := &pb.ExecuteTaskRequest{

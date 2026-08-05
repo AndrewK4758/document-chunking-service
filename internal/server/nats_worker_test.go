@@ -85,7 +85,11 @@ func TestProcessMessage_InvalidProtobufPayload_CallsTerm(t *testing.T) {
 func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
 	server := &NatsServer{}
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{})
+	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{},
+		},
+	})
 	// Valid ExecuteTaskRequest but missing document_uri in Payload
 	req := &pb.ExecuteTaskRequest{
 		StepId: "step-no-uri",
@@ -107,11 +111,14 @@ func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
 		subject: "worker.doc.test",
 	}
 
-	server.processMessage(context.Background(), msg)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("Expected panic due to missing document_uri, but got no panic")
+		}
+	}()
 
-	if !msg.acked {
-		t.Fatalf("Expected message to be acknowledged after reporting missing URI error contract")
-	}
+	server.processMessage(context.Background(), msg)
 }
 
 func TestBuildDocsStructResult_PropagatesIsScanned(t *testing.T) {

@@ -10,9 +10,8 @@ import (
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/identityparser"
 	"github.com/AndrewK4758/shared_utils/logger"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"github.com/AndrewK4758/shared_utils/workflowparser"
 )
 
 type DocumentProcessingServer struct {
@@ -27,14 +26,15 @@ func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store stor
 }
 
 func extractDocUri(req *pb.ChunkDocumentRequest) string {
-	if req == nil {
+	if req == nil || req.OriginalRequest == nil {
 		return "unknown"
 	}
-	if req.OriginalRequest == nil || req.OriginalRequest.Payload == nil {
+	parser := workflowparser.NewTaskRequestParser(req.OriginalRequest)
+	funcState, err := parser.GetFunctionalState()
+	if err != nil {
 		return "unknown"
 	}
-	payload := req.OriginalRequest.Payload.AsMap()
-	uri, _ := payload["document_uri"].(string)
+	uri, _ := funcState["document_uri"].(string)
 	if uri == "" {
 		return "unknown"
 	}
@@ -51,14 +51,9 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 			return fmt.Errorf("failed to receive chunk document request from stream: %w", err)
 		}
 
-		if err := identityparser.NewIdentityParser(req.GetIdentity()).Validate(true); err != nil {
-			logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED (gRPC ChunkDocument): %v", err)
-			return status.Errorf(codes.InvalidArgument, "invalid identity: %v", err)
-		}
+		identityparser.NewIdentityParser(req.GetIdentity()).MustValidate(true, "ChunkDocument")
 		if req.GetOriginalRequest() != nil && req.GetOriginalRequest().GetTaskSubject() == "" {
-			err := fmt.Errorf("missing required TaskSubject in OriginalRequest")
-			logger.Error("DocProcessor", "FAIL-FAST ASSERTION FAILED (gRPC ChunkDocument): %v", err)
-			return status.Errorf(codes.InvalidArgument, "%v", err)
+			panic(fmt.Errorf("action failed for job ChunkDocument: missing required TaskSubject in OriginalRequest"))
 		}
 
 		docUri := extractDocUri(req)

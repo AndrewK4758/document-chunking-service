@@ -60,7 +60,11 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payloadStruct, _ := structpb.NewStruct(tt.payload)
+			payloadStruct, _ := structpb.NewStruct(map[string]interface{}{
+				"global_state": map[string]interface{}{
+					"functional": tt.payload,
+				},
+			})
 			// We pass RawFileBytes so fetch succeeds immediately
 			_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 				RawFileBytes: []byte("dummy pdf/zip bytes"),
@@ -87,10 +91,14 @@ func TestAdversarial_ProcessZipFile_ZeroByteRawBytes(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri":           "internal-store://tenant/app/job/doc.pdf",
-		"max_pages_before_split": float64(10),
-		"sliding_window_size":   float64(5),
-		"doc_type_corrupted":    "corrupted",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri":           "internal-store://tenant/app/job/doc.pdf",
+				"max_pages_before_split": float64(10),
+				"sliding_window_size":   float64(5),
+				"doc_type_corrupted":    "corrupted",
+			},
+		},
 	})
 	// Test when raw file bytes is empty slice and storage fetch fails
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
@@ -116,7 +124,11 @@ func TestAdversarial_ProcessZipFile_ContextDoneEarly(t *testing.T) {
 	defer cancel()
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"document_uri": "internal-store://t/a/j1/doc.pdf",
+		"global_state": map[string]interface{}{
+			"functional": map[string]interface{}{
+				"document_uri": "internal-store://t/a/j1/doc.pdf",
+			},
+		},
 	})
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},

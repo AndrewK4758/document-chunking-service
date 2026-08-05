@@ -17,6 +17,7 @@ import (
 	"document_processing_service/internal/archive"
 	"document_processing_service/internal/storage"
 
+	"github.com/AndrewK4758/shared_utils/workflowparser"
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -379,8 +380,10 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	var zipBytes []byte
 
 	var payload map[string]interface{}
-	if req.OriginalRequest != nil && req.OriginalRequest.Payload != nil {
-		payload = req.OriginalRequest.Payload.AsMap()
+	if req.OriginalRequest != nil {
+		parser := workflowparser.NewTaskRequestParser(req.OriginalRequest)
+		parser.MustValidateRootPayloadStrict(req.GetIdentity().GetJobId())
+		payload = parser.MustGetFunctionalState(req.GetIdentity().GetJobId())
 	} else {
 		payload = make(map[string]interface{})
 	}
