@@ -329,24 +329,14 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 
 	parser := workflowparser.NewTaskRequestParser(&req)
 	parser.MustValidateRootPayloadStrict(j)
-	funcState := parser.MustGetFunctionalState(j)
-	
-	docUriVal, hasDocUri := funcState["document_uri"]
-	if !hasDocUri || docUriVal == nil {
-		panic(fmt.Errorf("action failed for job DocProcessorWorker: document_uri missing from global_state.functional"))
+	executeTaskPayload := parser.MustGetExecuteTaskPayload()
+	if executeTaskPayload.Storage == nil || executeTaskPayload.Storage.DocumentUri == "" {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: document_uri missing from storage"))
 	}
-	docUri, ok := docUriVal.(string)
-	if !ok || docUri == "" {
-		logger.Info("DocProcessor", "document_uri is empty")
-		s.sendErrorReply(ctx, replySubj, "MISSING_DOCUMENT_URI", "[Step: WORKER_DEQUEUE, URI: unknown] document_uri must be provided", t, a, j)
-		s.ackMessage(msg, startTime, t, a, j, attempt)
-		return
-	}
-
 	chunkReq := &pb.ChunkDocumentRequest{
-		Identity:          req.GetIdentity(),
-		StepId:            req.GetStepId(),
-		OriginalRequest:   &req,
+		Identity:        req.GetIdentity(),
+		StepId:          req.GetStepId(),
+		OriginalRequest: &req,
 	}
 
 	docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)

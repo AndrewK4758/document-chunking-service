@@ -1,5 +1,6 @@
 package processor
 
+
 import (
 	"context"
 	"os"
@@ -89,17 +90,19 @@ func TestChallenger_ParallelProcessZipFileAndGoroutineLeak(t *testing.T) {
 	wg.Add(concurrency)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"node_config": map[string]interface{}{},
 		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{
-				"document_uri":           "parallel.zip",
-				"max_pages_before_split": float64(10),
-				"sliding_window_size":   float64(5),
-				"doc_type_corrupted":    "corrupted",
-				"action_name_classify":  "action",
-				"doc_type_classified":   "classified",
-				"action_name_boundary":  "boundary",
-				"doc_type_chunked":     "chunked",
-			},
+			"functional": map[string]interface{}{},
+		},
+		"storage": map[string]interface{}{"document_uri": "parallel.zip"},
+		"document_processor": map[string]interface{}{
+			"max_pages_before_split": float64(10),
+			"sliding_window_size": float64(5),
+			"doc_type_corrupted": "corrupted",
+			"action_name_classify": "action",
+			"doc_type_classified": "classified",
+			"action_name_boundary": "boundary",
+			"doc_type_chunked": "chunked",
 		},
 	})
 	req := &pb.ExecuteTaskRequest{
@@ -177,17 +180,19 @@ func TestChallenger_TempFileCleanupIsolation(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 
 	cleanupPayload, _ := structpb.NewStruct(map[string]interface{}{
+		"node_config": map[string]interface{}{},
 		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{
-				"document_uri":           "cleanup.zip",
-				"max_pages_before_split": float64(10),
-				"sliding_window_size":   float64(5),
-				"doc_type_corrupted":    "corrupted",
-				"action_name_classify":  "action",
-				"doc_type_classified":   "classified",
-				"action_name_boundary":  "boundary",
-				"doc_type_chunked":     "chunked",
-			},
+			"functional": map[string]interface{}{},
+		},
+		"storage": map[string]interface{}{"document_uri": "cleanup.zip"},
+		"document_processor": map[string]interface{}{
+			"max_pages_before_split": float64(10),
+			"sliding_window_size": float64(5),
+			"doc_type_corrupted": "corrupted",
+			"action_name_classify": "action",
+			"doc_type_classified": "classified",
+			"action_name_boundary": "boundary",
+			"doc_type_chunked": "chunked",
 		},
 	})
 	cleanupReq := &pb.ExecuteTaskRequest{

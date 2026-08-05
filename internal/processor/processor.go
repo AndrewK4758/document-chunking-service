@@ -1,5 +1,6 @@
 package processor
 
+
 import (
 	"bytes"
 	"context"
@@ -17,8 +18,8 @@ import (
 	"document_processing_service/internal/archive"
 	"document_processing_service/internal/storage"
 
-	"github.com/AndrewK4758/shared_utils/workflowparser"
 	pb "github.com/AndrewK4758/shared_protos"
+	"github.com/AndrewK4758/shared_utils/workflowparser"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
@@ -118,20 +119,26 @@ func parseBoundaryResponse(resp *pb.PerformActionResponse) (int, error) {
 	return boundResp.BoundaryPageInSlice, nil
 }
 
-func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, payload map[string]interface{}, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) (*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, payload *pb.ExecuteTaskPayload, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) (*pb.ProcessedDocument, error) {
 	inputBytes, err := os.ReadFile(pdfPath)
 	if err != nil {
 		addTrace(fmt.Sprintf("Failed to read PDF file %s: %v", filepath.Base(pdfPath), err), "ERROR")
 		return nil, fmt.Errorf("[Step: SINGLE_DOC_PROCESSING, URI: %s] failed to read pdf file: %w", docUri, err)
 	}
 
-	actionName, _ := payload["action_name_classify"].(string)
+	actionName := ""
+	if payload != nil && payload.DocumentProcessor != nil {
+		actionName = payload.DocumentProcessor.ActionNameClassify
+	}
 	if actionName == "" {
 		inputBytes = nil
 		return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] action_name_classify must be configured", docUri)
 	}
 
-	systemInstructions, _ := payload["system_instructions"].(string)
+	systemInstructions := ""
+	if payload != nil && payload.NodeConfig != nil {
+		systemInstructions = payload.NodeConfig.SystemInstructions
+	}
 
 	resp, aiErr := p.executeAiAction(ctx, req.OriginalRequest, &pb.ActionDefinition{
 		Name:   actionName,
@@ -159,7 +166,10 @@ func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkD
 
 	inputBytes = nil
 
-	docTypeClassified, _ := payload["doc_type_classified"].(string)
+	docTypeClassified := ""
+	if payload != nil && payload.DocumentProcessor != nil {
+		docTypeClassified = payload.DocumentProcessor.DocTypeClassified
+	}
 	if docTypeClassified == "" {
 		return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] doc_type_classified must be configured", docUri)
 	}
@@ -172,7 +182,7 @@ func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkD
 	}, nil
 }
 
-func (p *ChunkingProcessor) processSingleDocAsSlice(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, payload map[string]interface{}, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) processSingleDocAsSlice(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, payload *pb.ExecuteTaskPayload, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
 	doc, err := p.processSingleDoc(ctx, req, pdfPath, pageCount, docUri, payload, modelChoice, isScanned, addTrace)
 	if err != nil {
 		return nil, err
@@ -180,7 +190,7 @@ func (p *ChunkingProcessor) processSingleDocAsSlice(ctx context.Context, req *pb
 	return []*pb.ProcessedDocument{doc}, nil
 }
 
-func (p *ChunkingProcessor) detectBoundaryInSlice(ctx context.Context, req *pb.ChunkDocumentRequest, sliceTempPath string, docUri string, payload map[string]interface{}, addTrace func(string, string), windowStart int, windowEnd int) (int, error) {
+func (p *ChunkingProcessor) detectBoundaryInSlice(ctx context.Context, req *pb.ChunkDocumentRequest, sliceTempPath string, docUri string, payload *pb.ExecuteTaskPayload, addTrace func(string, string), windowStart int, windowEnd int) (int, error) {
 	if p.AiClient == nil {
 		return 0, nil
 	}
@@ -194,14 +204,20 @@ func (p *ChunkingProcessor) detectBoundaryInSlice(ctx context.Context, req *pb.C
 		return 0, fmt.Errorf("[Step: SLICING, URI: %s] failed to read slice file: %w", docUri, err)
 	}
 
-	prompt, _ := payload["boundary_detection_prompt"].(string)
+	prompt := ""
+	if payload != nil && payload.DocumentProcessor != nil {
+		prompt = payload.DocumentProcessor.BoundaryDetectionPrompt
+	}
 	if prompt == "" {
 		addTrace("Boundary detection prompt missing or empty in request", "ERROR")
 		sliceBytes = nil
 		return 0, fmt.Errorf("[Step: SLICING, URI: %s] boundary detection prompt is required but not provided in request", docUri)
 	}
 
-	actionName, _ := payload["action_name_boundary"].(string)
+	actionName := ""
+	if payload != nil && payload.DocumentProcessor != nil {
+		actionName = payload.DocumentProcessor.ActionNameBoundary
+	}
 	if actionName == "" {
 		sliceBytes = nil
 		return 0, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] action_name_boundary must be configured", docUri)
@@ -270,16 +286,21 @@ func (p *ChunkingProcessor) extractAndUploadChunk(ctx context.Context, req *pb.C
 	}, nil
 }
 
-func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, payload map[string]interface{}, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, payload *pb.ExecuteTaskPayload, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
 	addTrace(fmt.Sprintf("%s exceeds max pages (%d), engaging sliding window splitter...", filepath.Base(pdfPath), maxPagesBeforeSplit), "INFO")
 
-	slidingWindowSizeVal, _ := payload["sliding_window_size"].(float64)
-	slidingWindowSize := int(slidingWindowSizeVal)
+	slidingWindowSize := 0
+	if payload != nil && payload.DocumentProcessor != nil {
+		slidingWindowSize = int(payload.DocumentProcessor.SlidingWindowSize)
+	}
 	if slidingWindowSize <= 0 {
 		return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] sliding_window_size must be configured and greater than 0", docUri)
 	}
 
-	docTypeChunked, _ := payload["doc_type_chunked"].(string)
+	docTypeChunked := ""
+	if payload != nil && payload.DocumentProcessor != nil {
+		docTypeChunked = payload.DocumentProcessor.DocTypeChunked
+	}
 	if docTypeChunked == "" {
 		return nil, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] doc_type_chunked must be configured", docUri)
 	}
@@ -354,7 +375,7 @@ func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDo
 	return processedDocs, nil
 }
 
-func (p *ChunkingProcessor) processDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, payload map[string]interface{}, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
+func (p *ChunkingProcessor) processDoc(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, maxPagesBeforeSplit int, extractDir string, docUri string, payload *pb.ExecuteTaskPayload, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {
 	isSingleDoc := pageCount <= maxPagesBeforeSplit
 	if isSingleDoc {
 		return p.processSingleDocAsSlice(ctx, req, pdfPath, pageCount, docUri, payload, modelChoice, isScanned, addTrace)
@@ -379,18 +400,16 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 	var zipBytes []byte
 
-	var payload map[string]interface{}
+	var payload *pb.ExecuteTaskPayload
 	if req.OriginalRequest != nil {
 		parser := workflowparser.NewTaskRequestParser(req.OriginalRequest)
 		parser.MustValidateRootPayloadStrict(req.GetIdentity().GetJobId())
-		payload = parser.MustGetFunctionalState(req.GetIdentity().GetJobId())
-	} else {
-		payload = make(map[string]interface{})
+		payload = parser.MustGetExecuteTaskPayload()
 	}
 
-	docUri, _ := payload["document_uri"].(string)
-	if docUri == "" {
-		docUri = "unknown"
+	docUri := "unknown"
+	if payload != nil && payload.Storage != nil && payload.Storage.DocumentUri != "" {
+		docUri = payload.Storage.DocumentUri
 	}
 
 	if len(req.RawFileBytes) > 0 {
@@ -446,8 +465,10 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 	addTrace(fmt.Sprintf("Extracted %d documents", len(extractedFiles)), "INFO")
 
-	maxPagesBeforeSplitVal, _ := payload["max_pages_before_split"].(float64)
-	maxPagesBeforeSplit := int(maxPagesBeforeSplitVal)
+	maxPagesBeforeSplit := 0
+	if payload != nil && payload.DocumentProcessor != nil {
+		maxPagesBeforeSplit = int(payload.DocumentProcessor.MaxPagesBeforeSplit)
+	}
 	if maxPagesBeforeSplit <= 0 {
 		return nil, traceEvents, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] max_pages_before_split must be configured and greater than 0", docUri)
 	}
@@ -455,7 +476,10 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	var processedDocs []*pb.ProcessedDocument
 
 	for _, pdfPath := range extractedFiles {
-		docTypeCorrupted, _ := payload["doc_type_corrupted"].(string)
+		docTypeCorrupted := ""
+		if payload != nil && payload.DocumentProcessor != nil {
+			docTypeCorrupted = payload.DocumentProcessor.DocTypeCorrupted
+		}
 		if docTypeCorrupted == "" {
 			return nil, traceEvents, fmt.Errorf("[Step: CONFIG_VALIDATION, URI: %s] doc_type_corrupted must be configured", docUri)
 		}

@@ -1,5 +1,6 @@
 package processor
 
+
 import (
 	"context"
 	"fmt"
@@ -41,30 +42,38 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 		{
 			name: "Missing MaxPagesBeforeSplit",
 			payload: map[string]interface{}{
-				"document_uri":        "test.pdf",
-				"sliding_window_size": float64(5),
-				"doc_type_corrupted":  "corrupted",
+				"node_config": map[string]interface{}{},
+				"global_state": map[string]interface{}{
+					"functional": map[string]interface{}{},
+				},
+				"storage": map[string]interface{}{"document_uri": "test.pdf"},
+				"document_processor": map[string]interface{}{
+					"sliding_window_size": float64(5),
+					"doc_type_corrupted": "corrupted",
+				},
 			},
-			expectedError: "MaxPagesBeforeSplit must be configured",
+			expectedError: "max_pages_before_split must be configured",
 		},
 		{
 			name: "Missing DocTypeCorrupted",
 			payload: map[string]interface{}{
-				"document_uri":           "test.pdf",
-				"max_pages_before_split": float64(10),
-				"sliding_window_size":   float64(5),
+				"node_config": map[string]interface{}{},
+				"global_state": map[string]interface{}{
+					"functional": map[string]interface{}{},
+				},
+				"storage": map[string]interface{}{"document_uri": "test.pdf"},
+				"document_processor": map[string]interface{}{
+					"max_pages_before_split": float64(10),
+					"sliding_window_size": float64(5),
+				},
 			},
-			expectedError: "DocTypeCorrupted must be configured",
+			expectedError: "doc_type_corrupted must be configured",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payloadStruct, _ := structpb.NewStruct(map[string]interface{}{
-				"global_state": map[string]interface{}{
-					"functional": tt.payload,
-				},
-			})
+			payloadStruct, _ := structpb.NewStruct(tt.payload)
 			// We pass RawFileBytes so fetch succeeds immediately
 			_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 				RawFileBytes: []byte("dummy pdf/zip bytes"),
@@ -91,13 +100,15 @@ func TestAdversarial_ProcessZipFile_ZeroByteRawBytes(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"node_config": map[string]interface{}{},
 		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{
-				"document_uri":           "internal-store://tenant/app/job/doc.pdf",
-				"max_pages_before_split": float64(10),
-				"sliding_window_size":   float64(5),
-				"doc_type_corrupted":    "corrupted",
-			},
+			"functional": map[string]interface{}{},
+		},
+		"storage": map[string]interface{}{"document_uri": "internal-store://tenant/app/job/doc.pdf"},
+		"document_processor": map[string]interface{}{
+			"max_pages_before_split": float64(10),
+			"sliding_window_size": float64(5),
+			"doc_type_corrupted": "corrupted",
 		},
 	})
 	// Test when raw file bytes is empty slice and storage fetch fails
@@ -124,10 +135,15 @@ func TestAdversarial_ProcessZipFile_ContextDoneEarly(t *testing.T) {
 	defer cancel()
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"node_config": map[string]interface{}{},
 		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{
-				"document_uri": "internal-store://t/a/j1/doc.pdf",
-			},
+			"functional": map[string]interface{}{},
+		},
+		"storage": map[string]interface{}{"document_uri": "internal-store://t/a/j1/doc.pdf"},
+		"document_processor": map[string]interface{}{
+			"max_pages_before_split": float64(10),
+			"sliding_window_size": float64(5),
+			"doc_type_corrupted": "corrupted",
 		},
 	})
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{

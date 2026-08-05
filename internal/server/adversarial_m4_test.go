@@ -74,13 +74,15 @@ func TestAdversarial_GRPC_StreamSendError(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, store)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
+		"node_config": map[string]interface{}{},
 		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{
-				"document_uri":           "nonexistent.zip",
-				"max_pages_before_split": float64(10),
-				"sliding_window_size":   float64(5),
-				"doc_type_corrupted":    "corrupted",
-			},
+			"functional": map[string]interface{}{},
+		},
+		"storage": map[string]interface{}{"document_uri": "nonexistent.zip"},
+		"document_processor": map[string]interface{}{
+			"max_pages_before_split": float64(10),
+			"sliding_window_size": float64(5),
+			"doc_type_corrupted": "corrupted",
 		},
 	})
 

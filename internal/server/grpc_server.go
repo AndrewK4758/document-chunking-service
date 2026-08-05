@@ -1,6 +1,7 @@
 package server
 
 import (
+
 	"fmt"
 	"io"
 
@@ -10,8 +11,8 @@ import (
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/identityparser"
 	"github.com/AndrewK4758/shared_utils/logger"
-	"google.golang.org/protobuf/encoding/protojson"
 	"github.com/AndrewK4758/shared_utils/workflowparser"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type DocumentProcessingServer struct {
@@ -30,15 +31,11 @@ func extractDocUri(req *pb.ChunkDocumentRequest) string {
 		return "unknown"
 	}
 	parser := workflowparser.NewTaskRequestParser(req.OriginalRequest)
-	funcState, err := parser.GetFunctionalState()
-	if err != nil {
-		return "unknown"
+	payload := parser.MustGetExecuteTaskPayload()
+	if payload != nil && payload.Storage != nil && payload.Storage.DocumentUri != "" {
+		return payload.Storage.DocumentUri
 	}
-	uri, _ := funcState["document_uri"].(string)
-	if uri == "" {
-		return "unknown"
-	}
-	return uri
+	return "unknown"
 }
 
 func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingService_ChunkDocumentServer) error {

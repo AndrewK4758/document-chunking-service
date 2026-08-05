@@ -85,11 +85,7 @@ func TestProcessMessage_InvalidProtobufPayload_CallsTerm(t *testing.T) {
 func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
 	server := &NatsServer{}
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
-		},
-	})
+	payload, _ := structpb.NewStruct(map[string]interface{}{})
 	// Valid ExecuteTaskRequest but missing document_uri in Payload
 	req := &pb.ExecuteTaskRequest{
 		StepId: "step-no-uri",
