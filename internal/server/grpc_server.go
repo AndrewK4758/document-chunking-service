@@ -26,16 +26,16 @@ func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store stor
 	}
 }
 
-func extractDocUri(req *pb.ChunkDocumentRequest) string {
+func extractDocUri(req *pb.ChunkDocumentRequest) (string, error) {
 	if req == nil || req.OriginalRequest == nil {
-		return "unknown"
+		return "", fmt.Errorf("action failed for job ChunkDocument: missing original request")
 	}
 	parser := workflowparser.NewTaskRequestParser(req.OriginalRequest)
 	payload := parser.MustGetExecuteTaskPayload()
-	if payload != nil && payload.Storage != nil && payload.Storage.DocumentUri != "" {
-		return payload.Storage.DocumentUri
+	if payload == nil || payload.Storage == nil || payload.Storage.DocumentUri == "" {
+		return "", fmt.Errorf("action failed for job ChunkDocument: missing document_uri in storage payload")
 	}
-	return "unknown"
+	return payload.Storage.DocumentUri, nil
 }
 
 func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingService_ChunkDocumentServer) error {
@@ -53,9 +53,25 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 			panic(fmt.Errorf("action failed for job ChunkDocument: missing required TaskSubject in OriginalRequest"))
 		}
 
-		docUri := extractDocUri(req)
-		reqJson, _ := protojson.Marshal(req)
-		logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentUri: %s, Payload: %s", req.Identity.GetJobId(), docUri, string(reqJson))
+		docUri, err := extractDocUri(req)
+		if err != nil {
+			logger.Info("DocProcessor", "Error extracting Document URI: %v", err)
+			err = stream.Send(&pb.ChunkDocumentResponse{
+				Success: false,
+				ErrorMessage: err.Error(),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to send chunk document response: %w", err)
+			}
+			continue
+		}
+
+		reqJson, err := protojson.Marshal(req)
+		if err != nil {
+			logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentUri: %s, Payload: failed to marshal", req.Identity.GetJobId(), docUri)
+		} else {
+			logger.Info("DocProcessor", "Received ChunkDocument request for JobID: %s, DocumentUri: %s, Payload: %s", req.Identity.GetJobId(), docUri, string(reqJson))
+		}
 
 		docs, traceEvents, err := s.chunker.ProcessZipFile(stream.Context(), req)
 		resp := &pb.ChunkDocumentResponse{

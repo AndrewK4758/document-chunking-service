@@ -177,7 +177,7 @@ func TestChunkDocument_EmptyRequest(t *testing.T) {
 	if resp.Success {
 		t.Error("Expected Success=false for empty request, got true")
 	}
-	if !strings.Contains(resp.ErrorMessage, "no file data provided in request") {
+	if !strings.Contains(resp.ErrorMessage, "missing document_uri in storage payload") {
 		t.Errorf("Unexpected ErrorMessage: %s", resp.ErrorMessage)
 	}
 }

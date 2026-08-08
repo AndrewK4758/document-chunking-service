@@ -72,5 +72,7 @@ func TestAdversarial_Extract_ZipPathTraversalProtection(t *testing.T) {
 			t.Errorf("ZipSlip vulnerability detected: file extracted outside target destination! %s", p)
 		}
 	}
-	_ = err
+	if err != nil {
+		t.Logf("Expected warning or error for non-existent path: %v", err)
+	}
 }

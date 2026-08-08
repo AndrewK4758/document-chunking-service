@@ -109,5 +109,5 @@ func TestAdversarial_GRPC_StreamSendError(t *testing.T) {
 func TestAdversarial_NATS_SendErrorReply_NilReplySubj(t *testing.T) {
 	server := &NatsServer{}
 	// Calling sendErrorReply with empty replySubj should return early safely without panic
-	server.sendErrorReply(context.Background(), "", "CODE", "msg", "t", "a", "j")
+	server.sendErrorReply(context.Background(), "", "CODE", "msg", &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"})
 }

@@ -1,6 +1,5 @@
 package processor
 
-
 import (
 	"bytes"
 	"context"
@@ -30,7 +29,7 @@ var (
 
 func getPdfCpuConfig() *model.Configuration {
 	pdfCpuConfigOnce.Do(func() {
-		_ = model.NewDefaultConfiguration()
+		// Initialization if necessary
 	})
 	return model.NewDefaultConfiguration()
 }
@@ -94,7 +93,7 @@ func (p *ChunkingProcessor) executeAiAction(ctx context.Context, origReq *pb.Exe
 	return stream.Recv()
 }
 
-func parseBoundaryResponse(resp *pb.PerformActionResponse) (int, error) {
+func parseBoundaryResponse(ctx context.Context, resp *pb.PerformActionResponse) (int, error) {
 	if resp == nil {
 		return 0, nil
 	}
@@ -150,18 +149,21 @@ func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkD
 	}
 
 	if resp != nil && aiErr == nil {
-		jsonBytes, _ := resp.ActionResult.MarshalJSON()
-		addTrace(fmt.Sprintf("AI Classification successful: %s", string(jsonBytes)), "INFO")
+		jsonBytes, jsonErr := resp.ActionResult.MarshalJSON()
+		if jsonErr == nil {
+			addTrace(fmt.Sprintf("AI Classification successful: %s", string(jsonBytes)), "INFO")
+		} else {
+			addTrace("AI Classification successful, but failed to marshal result", "WARN")
+		}
 	}
 
-	var relativePath string
-	var uploadErr error
-	if p.Store != nil {
-		relativePath, uploadErr = p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", req.GetIdentity().GetJobId(), filepath.Base(pdfPath)), req.GetIdentity(), inputBytes)
+	if p.Store == nil {
+		return nil, fmt.Errorf("[Step: SINGLE_DOC_PROCESSING, URI: %s] store manager not configured", docUri)
 	}
+	relativePath, uploadErr := p.Store.SaveFile(ctx, fmt.Sprintf("%s/%s", req.GetIdentity().GetJobId(), filepath.Base(pdfPath)), req.GetIdentity(), inputBytes)
 	if uploadErr != nil {
 		addTrace(fmt.Sprintf("Failed to upload classified doc: %v", uploadErr), "ERROR")
-		relativePath = ""
+		return nil, fmt.Errorf("[Step: SINGLE_DOC_PROCESSING, URI: %s] failed to upload doc: %w", docUri, uploadErr)
 	}
 
 	inputBytes = nil
@@ -231,7 +233,7 @@ func (p *ChunkingProcessor) detectBoundaryInSlice(ctx context.Context, req *pb.C
 	resp, err := p.executeAiAction(ctx, req.OriginalRequest, actionDef, sliceBytes, pb.ModelChoice_MODEL_CHOICE_OCR, req.GetIdentity())
 	sliceBytes = nil
 
-	boundaryPageInSlice, unmarshalErr := parseBoundaryResponse(resp)
+	boundaryPageInSlice, unmarshalErr := parseBoundaryResponse(ctx, resp)
 	if unmarshalErr != nil {
 		addTrace(fmt.Sprintf("Failed to unmarshal boundary detection response: %v", unmarshalErr), "ERROR")
 		return 0, fmt.Errorf("[Step: SLICING, URI: %s] failed to unmarshal boundary detection response: %w", docUri, unmarshalErr)
@@ -267,15 +269,14 @@ func (p *ChunkingProcessor) extractAndUploadChunk(ctx context.Context, req *pb.C
 		return nil, fmt.Errorf("[Step: SLICING, URI: %s] failed to read chunk file: %w", docUri, readErr)
 	}
 
-	var relativePath string
-	var uploadErr error
-	if p.Store != nil {
-		relativePath, uploadErr = p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), req.GetIdentity(), chunkBytes)
-		chunkBytes = nil
+	if p.Store == nil {
+		return nil, fmt.Errorf("[Step: SLICING, URI: %s] store manager not configured", docUri)
 	}
+	relativePath, uploadErr := p.Store.SaveFile(ctx, fmt.Sprintf("%s/chunk_%d.pdf", req.GetIdentity().GetJobId(), chunkIndex), req.GetIdentity(), chunkBytes)
+	chunkBytes = nil
 	if uploadErr != nil {
 		addTrace(fmt.Sprintf("Failed to upload chunk %d: %v", chunkIndex, uploadErr), "ERROR")
-		relativePath = ""
+		return nil, fmt.Errorf("[Step: SLICING, URI: %s] failed to upload chunk: %w", docUri, uploadErr)
 	}
 
 	return &pb.ProcessedDocument{
@@ -407,32 +408,24 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 		payload = parser.MustGetExecuteTaskPayload()
 	}
 
-	docUri := "unknown"
-	if payload != nil && payload.Storage != nil && payload.Storage.DocumentUri != "" {
-		docUri = payload.Storage.DocumentUri
+	if payload == nil || payload.Storage == nil || payload.Storage.DocumentUri == "" {
+		return nil, traceEvents, fmt.Errorf("[Step: JIT_FETCH] document_uri missing from storage payload")
 	}
+	docUri := payload.Storage.DocumentUri
 
 	if len(req.RawFileBytes) > 0 {
 		addTrace("Using raw file bytes from request", "INFO")
 		zipBytes = req.RawFileBytes
-	}
-
-	if len(zipBytes) == 0 && docUri == "unknown" {
-		return nil, traceEvents, fmt.Errorf("[Step: JIT_FETCH, URI: %s] no file data provided in request", docUri)
-	}
-
-	if len(zipBytes) == 0 && p.Store == nil {
-		return nil, traceEvents, fmt.Errorf("[Step: JIT_FETCH, URI: %s] storage manager is not configured", docUri)
-	}
-
-	if len(zipBytes) == 0 {
+	} else {
+		if p.Store == nil {
+			return nil, traceEvents, fmt.Errorf("[Step: JIT_FETCH, URI: %s] storage manager is not configured", docUri)
+		}
 		addTrace(fmt.Sprintf("Fetching %s from store", docUri), "INFO")
 		zipBytes, err = p.Store.FetchFile(ctx, docUri, req.Identity)
-	}
-
-	if err != nil {
-		addTrace(fmt.Sprintf("Failed to fetch file: %v", err), "ERROR")
-		return nil, traceEvents, fmt.Errorf("[Step: JIT_FETCH, URI: %s] failed to fetch from store: %w", docUri, err)
+		if err != nil {
+			addTrace(fmt.Sprintf("Failed to fetch file: %v", err), "ERROR")
+			return nil, traceEvents, fmt.Errorf("[Step: JIT_FETCH, URI: %s] failed to fetch from store: %w", docUri, err)
+		}
 	}
 
 	extractDir, err := os.MkdirTemp("", fmt.Sprintf("chunking_job_%s_*", req.GetIdentity().GetJobId()))
@@ -441,10 +434,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	}
 	defer cleanupDir(extractDir, addTrace)
 
-	originalFilename := "input.pdf"
-	if docUri != "unknown" {
-		originalFilename = filepath.Base(docUri)
-	}
+	originalFilename := filepath.Base(docUri)
 
 	tempInputPath := filepath.Join(extractDir, originalFilename)
 	err = os.WriteFile(tempInputPath, zipBytes, 0644)
@@ -511,8 +501,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 		// Probe text vs OCR
 		isScanned, detectErr := detectIsScannedPDF(pdfPath)
 		if detectErr != nil {
-			addTrace(fmt.Sprintf("Failed to detect PDF type for %s: %v", filepath.Base(pdfPath), detectErr), "WARN")
-			isScanned = true
+			addTrace(fmt.Sprintf("Failed to detect PDF type for %s: %v", filepath.Base(pdfPath), detectErr), "ERROR")
+			return nil, traceEvents, fmt.Errorf("[Step: PDF_ANALYSIS, URI: %s] failed to detect scan type for %s: %w", docUri, filepath.Base(pdfPath), detectErr)
 		}
 
 		modelChoice := pb.ModelChoice_MODEL_CHOICE_OCR

@@ -125,7 +125,7 @@ func TestProcessZipFile_EmptyPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error for empty zip path, got nil")
 	}
-	if !strings.Contains(err.Error(), "no file data provided in request") {
+	if !strings.Contains(err.Error(), "document_uri missing from storage payload") {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 }
@@ -455,7 +455,10 @@ func TestDetectIsScannedPDF(t *testing.T) {
 	textPdfPath := createSyntheticPDF(t, tempDir, "text.pdf", syntheticTextPDF)
 	scannedPdfPath := createSyntheticPDF(t, tempDir, "scanned.pdf", syntheticScannedPDF)
 	corruptedPath := filepath.Join(tempDir, "corrupted.pdf")
-	_ = os.WriteFile(corruptedPath, []byte("invalid pdf content header"), 0644)
+	err := os.WriteFile(corruptedPath, []byte("invalid pdf content header"), 0644)
+	if err != nil {
+		t.Fatalf("failed to write corrupted doc: %v", err)
+	}
 
 	tests := []struct {
 		name          string

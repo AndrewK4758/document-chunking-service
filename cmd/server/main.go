@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 
 	"github.com/AndrewK4758/shared_utils/envutil"
@@ -27,7 +28,7 @@ func main() {
 
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		logger.Fatal("DocProcessor", "failed to listen: %v", err)
+		panic(fmt.Errorf("failed to listen: %v", err))
 	}
 
 	s := grpc.NewServer()
@@ -37,32 +38,39 @@ func main() {
 
 	aiConn, err := grpc.NewClient(aiServiceUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		logger.Fatal("DocProcessor", "failed to dial ai_service: %v", err)
+		panic(fmt.Errorf("failed to dial ai_service: %v", err))
 	}
 	defer aiConn.Close()
 
 	aiClient := pb.NewDocumentProcessorClient(aiConn)
 
-	// Query available models on startup
-	modelsResp, err := aiClient.GetAvailableModels(context.Background(), &pb.GetAvailableModelsRequest{
-		Identity: &pb.InfrastructureIdentity{
-			TenantId: "system",
-			AppId:    "doc_processor_startup",
-			JobId:    "startup",
-		},
-	})
-	if err != nil {
-		logger.Info("DocProcessor", "Warning: failed to query AI service for available models: %v", err)
-	} else {
-		logger.Info("DocProcessor", "AI Service Models Loaded - Text: %v, OCR: %v", modelsResp.TextModels, modelsResp.OcrModels)
-	}
+	// ... (Wait, main.go already imports context, net, etc. I need to add 'os' if it's missing)
+	// Query available models on startup asynchronously
+	go func() {
+		tenant := envutil.GetStringOrDefault("TENANT_ID", "system")
+		app := envutil.GetStringOrDefault("APP_ID", "doc_processor_startup")
+		job := envutil.GetStringOrDefault("JOB_ID", "startup")
+
+		modelsResp, err := aiClient.GetAvailableModels(context.Background(), &pb.GetAvailableModelsRequest{
+			Identity: &pb.InfrastructureIdentity{
+				TenantId: tenant,
+				AppId:    app,
+				JobId:    job,
+			},
+		})
+		if err != nil {
+			logger.Info("DocProcessor", "Warning: failed to query AI service for available models: %v", err)
+		} else {
+			logger.Info("DocProcessor", "AI Service Models Loaded - Text: %v, OCR: %v", modelsResp.TextModels, modelsResp.OcrModels)
+		}
+	}()
 
 	// Initialize Storage Gateway Client
 	gatewayAddr := envutil.MustGetString("STORAGE_GATEWAY_ADDR")
 
 	gatewayConn, err := grpc.NewClient(gatewayAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		logger.Fatal("DocProcessor", "failed to dial storage_gateway: %v", err)
+		panic(fmt.Errorf("failed to dial storage_gateway: %v", err))
 	}
 	defer gatewayConn.Close()
 
@@ -75,13 +83,13 @@ func main() {
 	}
 	nc, err := natsutil.ConnectWithRetries(natsURL, "DocProcessor")
 	if err != nil {
-		logger.Fatal("DocProcessor", "failed to connect to NATS: %v", err)
+		panic(fmt.Errorf("failed to connect to NATS: %v", err))
 	}
 	defer nc.Close()
 
 	js, err := jetstream.New(nc)
 	if err != nil {
-		logger.Fatal("DocProcessor", "failed to init JetStream: %v", err)
+		panic(fmt.Errorf("failed to init JetStream: %v", err))
 	}
 
 	natsServer := server.NewNatsServer(nc, js, aiClient, store)
@@ -90,7 +98,7 @@ func main() {
 
 	go func() {
 		if err := natsServer.Start(ctx); err != nil {
-			logger.Fatal("DocProcessor", "NATS Server failed: %v", err)
+			panic(fmt.Errorf("NATS Server failed: %v", err))
 		}
 	}()
 
@@ -100,6 +108,6 @@ func main() {
 
 	logger.Info("DocProcessor", "Document Processing Service listening on %v", lis.Addr())
 	if err := s.Serve(lis); err != nil {
-		logger.Fatal("DocProcessor", "failed to serve: %v", err)
+		panic(fmt.Errorf("failed to serve: %v", err))
 	}
 }

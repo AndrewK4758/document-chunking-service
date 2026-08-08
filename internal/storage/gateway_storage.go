@@ -71,10 +71,11 @@ func (g *GatewayStorage) FetchFile(ctx context.Context, relativePath string, ide
 		}
 
 		if attempt > 0 {
+			backoffMs := retrySleepMs * (1 << (attempt - 1))
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(time.Duration(retrySleepMs) * time.Millisecond):
+			case <-time.After(time.Duration(backoffMs) * time.Millisecond):
 			}
 		}
 
