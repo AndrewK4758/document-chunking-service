@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/AndrewK4758/shared_utils/workflowparser"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var (
@@ -182,6 +184,79 @@ func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkD
 		PageCount:        int32(pageCount),
 		IsScanned:        isScanned,
 	}, nil
+}
+
+func (p *ChunkingProcessor) InspectDocument(ctx context.Context, req *pb.ExecuteTaskRequest, docUri string, addTrace func(string, string)) (*structpb.Struct, error) {
+	if p.Store == nil {
+		return nil, fmt.Errorf("[Step: INSPECT, URI: %s] store manager not configured", docUri)
+	}
+
+	stream, err := p.Store.FetchStream(ctx, docUri, req.GetIdentity())
+	if err != nil {
+		addTrace(fmt.Sprintf("Failed to fetch stream: %v", err), "ERROR")
+		return nil, fmt.Errorf("[Step: INSPECT, URI: %s] failed to fetch stream: %w", docUri, err)
+	}
+	defer stream.Close()
+
+	tmpFile, err := os.CreateTemp("", "inspect-*.pdf")
+	if err != nil {
+		addTrace(fmt.Sprintf("Failed to create temp file: %v", err), "ERROR")
+		return nil, fmt.Errorf("[Step: INSPECT, URI: %s] failed to create temp file: %w", docUri, err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	// Read only up to 5MB to avoid full memory load or massive disk I/O if possible
+	// However, pdftotext requires a valid PDF which means EOF and xref are at the end.
+	// We have to stream the whole file to disk. But we do this dynamically without keeping it in RAM.
+	_, err = io.Copy(tmpFile, stream)
+	if err != nil {
+		tmpFile.Close()
+		addTrace(fmt.Sprintf("Failed to copy stream to temp file: %v", err), "ERROR")
+		return nil, fmt.Errorf("[Step: INSPECT, URI: %s] failed to copy stream to temp file: %w", docUri, err)
+	}
+	tmpFile.Close()
+
+	inspectPageLimit := os.Getenv("INSPECT_PAGE_LIMIT")
+	if inspectPageLimit == "" {
+		inspectPageLimit = "2"
+	}
+	// Use pdftotext to extract text from first N pages
+	cmd := exec.CommandContext(ctx, "pdftotext", "-q", "-l", inspectPageLimit, tmpFile.Name(), "-")
+	outBytes, err := cmd.Output()
+
+	isScanned := false
+	if err != nil {
+		addTrace(fmt.Sprintf("pdftotext failed (assuming scanned): %v", err), "WARN")
+		isScanned = true
+	} else {
+		text := strings.TrimSpace(string(outBytes))
+
+		inspectTextThreshold := 50
+		thresholdStr := os.Getenv("INSPECT_TEXT_THRESHOLD")
+		if thresholdStr != "" {
+			fmt.Sscanf(thresholdStr, "%d", &inspectTextThreshold)
+		}
+
+		// If very little text is extracted, it's likely a scanned document
+		if len(text) < inspectTextThreshold {
+			isScanned = true
+		}
+	}
+
+	// We don't have IsMultiDocument logic here yet, we'll assume false or let downstream handle it.
+	// But we'll return IsScanned.
+	resultMap := map[string]interface{}{
+		"IsScanned":       isScanned,
+		"IsMultiDocument": false,
+	}
+
+	structResult, err := structpb.NewStruct(resultMap)
+	if err != nil {
+		return nil, fmt.Errorf("[Step: INSPECT, URI: %s] failed to create structpb: %w", docUri, err)
+	}
+
+	addTrace(fmt.Sprintf("Document inspected. IsScanned: %v", isScanned), "INFO")
+	return structResult, nil
 }
 
 func (p *ChunkingProcessor) processSingleDocAsSlice(ctx context.Context, req *pb.ChunkDocumentRequest, pdfPath string, pageCount int, docUri string, payload *pb.ExecuteTaskPayload, modelChoice pb.ModelChoice, isScanned bool, addTrace func(string, string)) ([]*pb.ProcessedDocument, error) {

@@ -3,6 +3,8 @@ package server
 import (
 	"archive/zip"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +21,10 @@ type mockStorage struct {
 
 func (m *mockStorage) FetchFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity) ([]byte, error) {
 	return os.ReadFile(filepath.Join(m.basePath, relPath))
+}
+
+func (m *mockStorage) FetchStream(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("not implemented")
 }
 
 func (m *mockStorage) SaveFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity, data []byte) (string, error) {
@@ -73,12 +79,12 @@ func TestChunkDocument_Success(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "test_valid.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
-			"action_name_classify": "action",
-			"doc_type_classified": "classified",
-			"action_name_boundary": "boundary",
-			"doc_type_chunked": "chunked",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
+			"action_name_classify":   "action",
+			"doc_type_classified":    "classified",
+			"action_name_boundary":   "boundary",
+			"doc_type_chunked":       "chunked",
 		},
 	})
 	req := &pb.ChunkDocumentRequest{
@@ -118,8 +124,8 @@ func TestChunkDocument_Failure(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "nonexistent/path/to/bad.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
 		},
 	})
 	req := &pb.ChunkDocumentRequest{

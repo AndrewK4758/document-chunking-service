@@ -97,6 +97,63 @@ func (g *GatewayStorage) FetchFile(ctx context.Context, relativePath string, ide
 	return nil, fmt.Errorf("storage fetch failed for %s after %d retries: %w", relativePath, retryCount, lastErr)
 }
 
+type streamReader struct {
+	stream pb.StorageGatewayService_DownloadDocumentClient
+	buf    []byte
+	cancel context.CancelFunc
+}
+
+func (r *streamReader) Read(p []byte) (n int, err error) {
+	if len(r.buf) > 0 {
+		n = copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	resp, err := r.stream.Recv()
+	if err == io.EOF {
+		return 0, io.EOF
+	}
+	if err != nil {
+		return 0, err
+	}
+	n = copy(p, resp.ChunkData)
+	if n < len(resp.ChunkData) {
+		r.buf = append(r.buf, resp.ChunkData[n:]...)
+	}
+	return n, nil
+}
+
+func (r *streamReader) Close() error {
+	if r.cancel != nil {
+		r.cancel()
+	}
+	return nil
+}
+
+func (g *GatewayStorage) FetchStream(ctx context.Context, relativePath string, identity *pb.InfrastructureIdentity) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	reqCtx, cancel := context.WithCancel(forwardMetadata(ctx))
+	req := &pb.DownloadRequest{
+		StorageUri: relativePath,
+		Identity:   identity,
+	}
+
+	stream, err := g.client.DownloadDocument(reqCtx, req)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to initiate download stream for %s: %w", relativePath, err)
+	}
+
+	return &streamReader{
+		stream: stream,
+		buf:    nil,
+		cancel: cancel,
+	}, nil
+}
+
 func (g *GatewayStorage) receiveStreamChunks(stream pb.StorageGatewayService_DownloadDocumentClient, relativePath string) ([]byte, error) {
 	var data []byte
 	for {

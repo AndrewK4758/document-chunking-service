@@ -3,6 +3,8 @@ package processor
 import (
 	"archive/zip"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,11 +35,20 @@ func (m *mockAiClient) ProcessDocument(ctx context.Context, opts ...grpc.CallOpt
 
 // mockStorage provides a dummy local disk storage for unit tests
 type mockStorage struct {
-	basePath string
+	basePath  string
+	fetchData []byte
+	fetchErr  error
 }
 
 func (m *mockStorage) FetchFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity) ([]byte, error) {
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
 	return os.ReadFile(filepath.Join(m.basePath, relPath))
+}
+
+func (m *mockStorage) FetchStream(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("not implemented")
 }
 
 func (m *mockStorage) SaveFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity, data []byte) (string, error) {
@@ -91,12 +102,12 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "test.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
-			"action_name_classify": "action",
-			"doc_type_classified": "classified",
-			"action_name_boundary": "boundary",
-			"doc_type_chunked": "chunked",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
+			"action_name_classify":   "action",
+			"doc_type_classified":    "classified",
+			"action_name_boundary":   "boundary",
+			"doc_type_chunked":       "chunked",
 		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
@@ -147,8 +158,8 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "bad.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
 		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
@@ -185,12 +196,12 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "slip.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
-				"action_name_classify":  "action",
-				"doc_type_classified":   "classified",
-				"action_name_boundary":  "boundary",
-				"doc_type_chunked":     "chunked",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
+			"action_name_classify":   "action",
+			"doc_type_classified":    "classified",
+			"action_name_boundary":   "boundary",
+			"doc_type_chunked":       "chunked",
 		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
@@ -226,8 +237,8 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "dummy.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
 		},
 	})
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
@@ -261,8 +272,8 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "missing_from_storage.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
 		},
 	})
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
@@ -300,9 +311,9 @@ func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
 		},
 		"storage": map[string]interface{}{"document_uri": "multi.zip"},
 		"document_processor": map[string]interface{}{
-			"max_pages_before_split": float64(1),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted":       "corrupted",
+			"max_pages_before_split":    float64(1),
+			"sliding_window_size":       float64(5),
+			"doc_type_corrupted":        "corrupted",
 			"boundary_detection_prompt": "",
 		},
 	})
@@ -335,8 +346,8 @@ func TestProcessZipFile_EnrichedErrorFormat(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "internal-store://tenant/app/job/missing.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
 		},
 	})
 	_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
@@ -528,12 +539,12 @@ func TestProcessZipFile_PDFTypeDetection(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "mixed_type.zip"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
-				"action_name_classify":  "action",
-				"doc_type_classified":   "classified",
-				"action_name_boundary":  "boundary",
-				"doc_type_chunked":     "chunked",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
+			"action_name_classify":   "action",
+			"doc_type_classified":    "classified",
+			"action_name_boundary":   "boundary",
+			"doc_type_chunked":       "chunked",
 		},
 	})
 	chunker := NewChunkingProcessor(nil, store)
@@ -656,4 +667,3 @@ func TestUnescapePDFLiteralString(t *testing.T) {
 		})
 	}
 }
-

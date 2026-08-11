@@ -25,8 +25,8 @@ import (
 )
 
 const (
-	ErrorCode       = "DOCUMENT_PROCESSING_FAILED"
-	ErrorSource     = "document_processing_service"
+	ErrorCode   = "DOCUMENT_PROCESSING_FAILED"
+	ErrorSource = "document_processing_service"
 )
 
 type NatsServer struct {
@@ -57,8 +57,8 @@ func (s *NatsServer) Start(ctx context.Context) error {
 			Durable:        consumerName,
 			AckPolicy:      jetstream.AckExplicitPolicy,
 			FilterSubjects: []string{"worker.doc.>"}, // Or from env if necessary, assuming only durable and stream are hard violations mentioned
-			MaxAckPending:  10,
-			AckWait:        5 * time.Minute,
+			MaxAckPending:  envutil.MustGetInt("MAX_ACK_PENDING"),
+			AckWait:        envutil.MustGetDuration("WORKER_ACK_WAIT"),
 		})
 		if err == nil {
 			break
@@ -335,23 +335,33 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	if executeTaskPayload.Storage == nil || executeTaskPayload.Storage.DocumentUri == "" {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: document_uri missing from storage"))
 	}
-	chunkReq := &pb.ChunkDocumentRequest{
-		Identity:        req.GetIdentity(),
-		StepId:          req.GetStepId(),
-		OriginalRequest: &req,
+	var structResult *structpb.Struct
+	var processErr error
+
+	if req.GetTaskSubject() == "worker.doc.inspect" {
+		structResult, processErr = s.chunker.InspectDocument(ctx, &req, executeTaskPayload.Storage.DocumentUri, func(msg string, level string) {
+			logger.Info("DocProcessor", "[%s] %s", level, msg)
+		})
+	} else {
+		chunkReq := &pb.ChunkDocumentRequest{
+			Identity:        req.GetIdentity(),
+			StepId:          req.GetStepId(),
+			OriginalRequest: &req,
+		}
+		docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
+		processErr = err
+		if err == nil {
+			logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", identity.GetJobId(), len(docs))
+			structResult, processErr = buildDocsStructResult(docs)
+		}
 	}
 
-	docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
-
-	if err != nil {
-		s.handleProcessingError(ctx, msg, replySubj, err, startTime, identity, attempt)
+	if processErr != nil {
+		s.handleProcessingError(ctx, msg, replySubj, processErr, startTime, identity, attempt)
 		return
 	}
 
-	logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", identity.GetJobId(), len(docs))
-	structResult, marshalErr := buildDocsStructResult(docs)
-	if marshalErr != nil {
-		logger.Info("DocProcessor", "Failed to marshal docs to JSON: %v", marshalErr)
+	if structResult == nil {
 		nackTimeoutJson := envutil.MustGetInt("NACK_JSON_TIMEOUT")
 		natsutil.LogJetStreamEvent(natsutil.JetStreamLogEvent{
 			Component:  "DocProcessor",
@@ -364,7 +374,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 			JobID:      identity.GetJobId(),
 			Attempt:    attempt,
 			DurationMs: time.Since(startTime).Milliseconds(),
-			Error:      marshalErr,
+			Error:      fmt.Errorf("structResult is nil"),
 		})
 		msg.NakWithDelay(time.Duration(nackTimeoutJson) * time.Second)
 		return

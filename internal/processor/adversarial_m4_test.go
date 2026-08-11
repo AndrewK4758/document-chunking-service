@@ -1,9 +1,9 @@
 package processor
 
-
 import (
 	"context"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -21,6 +21,13 @@ func (m *mockFailingStorage) FetchFile(ctx context.Context, relativePath string,
 		return nil, fmt.Errorf("[Step: JIT_FETCH, URI: %s] storage network timeout simulated", relativePath)
 	}
 	return []byte("dummy zip content"), nil
+}
+
+func (m *mockFailingStorage) FetchStream(ctx context.Context, relativePath string, identity *pb.InfrastructureIdentity) (io.ReadCloser, error) {
+	if m.failFetch {
+		return nil, fmt.Errorf("[Step: JIT_FETCH, URI: %s] storage network timeout simulated", relativePath)
+	}
+	return nil, fmt.Errorf("not implemented")
 }
 
 func (m *mockFailingStorage) SaveFile(ctx context.Context, relativePath string, identity *pb.InfrastructureIdentity, data []byte) (string, error) {
@@ -49,7 +56,7 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 				"storage": map[string]interface{}{"document_uri": "test.pdf"},
 				"document_processor": map[string]interface{}{
 					"sliding_window_size": float64(5),
-					"doc_type_corrupted": "corrupted",
+					"doc_type_corrupted":  "corrupted",
 				},
 			},
 			expectedError: "max_pages_before_split must be configured",
@@ -64,7 +71,7 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 				"storage": map[string]interface{}{"document_uri": "test.pdf"},
 				"document_processor": map[string]interface{}{
 					"max_pages_before_split": float64(10),
-					"sliding_window_size": float64(5),
+					"sliding_window_size":    float64(5),
 				},
 			},
 			expectedError: "doc_type_corrupted must be configured",
@@ -107,8 +114,8 @@ func TestAdversarial_ProcessZipFile_ZeroByteRawBytes(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "internal-store://tenant/app/job/doc.pdf"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
 		},
 	})
 	// Test when raw file bytes is empty slice and storage fetch fails
@@ -142,8 +149,8 @@ func TestAdversarial_ProcessZipFile_ContextDoneEarly(t *testing.T) {
 		"storage": map[string]interface{}{"document_uri": "internal-store://t/a/j1/doc.pdf"},
 		"document_processor": map[string]interface{}{
 			"max_pages_before_split": float64(10),
-			"sliding_window_size": float64(5),
-			"doc_type_corrupted": "corrupted",
+			"sliding_window_size":    float64(5),
+			"doc_type_corrupted":     "corrupted",
 		},
 	})
 	_, _, err := chunker.ProcessZipFile(ctx, &pb.ChunkDocumentRequest{
