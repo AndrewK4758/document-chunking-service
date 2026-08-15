@@ -1,4 +1,0 @@
-package processor
-
-func init() {
-}
