@@ -1,0 +1,33 @@
+# Build Stage
+FROM golang:alpine AS builder
+
+WORKDIR /app
+
+COPY --from=shared_protos . /app/shared_protos
+COPY --from=shared_utils . /app/shared_utils
+COPY . /app/document_processing_service
+WORKDIR /app/document_processing_service
+RUN go mod edit -replace github.com/AndrewK4758/shared_protos=../shared_protos
+
+# Download dependencies
+RUN go mod edit -replace github.com/AndrewK4758/shared_utils=../shared_utils
+RUN go mod download
+
+# Build the Go application
+RUN CGO_ENABLED=0 GOOS=linux go build -o /doc_processing_service_bin ./cmd/server
+
+# Final Stage (Runtime)
+FROM alpine:latest
+
+# We only need basic certificates and poppler-utils for pdf-to-image conversion
+RUN apk --no-cache add ca-certificates poppler-utils
+
+WORKDIR /app
+
+# Copy the static binary and db folder from the builder
+COPY --from=builder /doc_processing_service_bin .
+COPY --from=builder /app/document_processing_service/db ./db
+
+EXPOSE 50054
+
+ENTRYPOINT ["./doc_processing_service_bin"]
