@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="dotnet_ml_worker.Tests/dotnet_ml_worker.Tests.csproj" />
+  <Project Path="dotnet_ml_worker/dotnet_ml_worker.csproj" />
+</Solution>
