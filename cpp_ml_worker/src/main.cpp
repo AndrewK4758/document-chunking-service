@@ -74,8 +74,8 @@ int main(int argc, char** argv) {
     std::cout << "Starting C++ ML Worker..." << std::endl;
 
     // Provide default paths, these could be overridden by env vars
-    std::string model_path = "model.onnx";
-    std::string tokenizer_path = "tokenizer.json";
+    std::string model_path = "/home/ak/projects/ml/model.onnx";
+    std::string tokenizer_path = "/home/ak/projects/ml/tokenizer.json";
     
     if (const char* env_m = std::getenv("ONNX_MODEL_PATH")) {
         model_path = env_m;
