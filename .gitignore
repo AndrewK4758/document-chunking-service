@@ -1,2 +1,11 @@
 bin/
 bin
+obj/
+obj
+cmake-build-*/
+.vs/
+out/
+build/
+model.onnx
+tokenizer.json
+.idea/

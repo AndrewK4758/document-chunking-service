@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -13,10 +14,11 @@ import (
 )
 
 type mockMsgForTerm struct {
-	data    []byte
-	subject string
-	termed  bool
-	acked   bool
+	data           []byte
+	subject        string
+	termed         bool
+	acked          bool
+	nakedWithDelay bool
 }
 
 func (m *mockMsgForTerm) Metadata() (*jetstream.MsgMetadata, error) {
@@ -48,6 +50,7 @@ func (m *mockMsgForTerm) Nak() error {
 	return nil
 }
 func (m *mockMsgForTerm) NakWithDelay(delay time.Duration) error {
+	m.nakedWithDelay = true
 	return nil
 }
 func (m *mockMsgForTerm) InProgress() error {
@@ -80,6 +83,10 @@ func TestProcessMessage_InvalidProtobufPayload_CallsTerm(t *testing.T) {
 	if msg.acked {
 		t.Fatalf("Expected msg.Ack() NOT to be called on invalid protobuf payload")
 	}
+}
+
+func init() {
+	os.Setenv("WORKERS_STREAM", "WORKERS")
 }
 
 func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
@@ -150,5 +157,20 @@ func TestBuildDocsStructResult_PropagatesIsScanned(t *testing.T) {
 	scannedVal := list[0].GetStructValue().Fields["is_scanned"].GetBoolValue()
 	if !scannedVal {
 		t.Errorf("Expected doc 0 is_scanned to be true, got false")
+	}
+}
+
+func TestHandleMessageWithRecovery_Panic_NakWithDelay(t *testing.T) {
+	server := &NatsServer{}
+	msg := &mockMsgForTerm{
+		subject: "worker.doc.test",
+	}
+	sem := make(chan struct{}, 1)
+
+	// processMessage panics because req is empty (GetTaskSubject == "")
+	server.HandleMessageWithRecovery(context.Background(), msg, sem)
+
+	if !msg.nakedWithDelay {
+		t.Errorf("Expected NakWithDelay to be called on panic")
 	}
 }

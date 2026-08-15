@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -216,31 +215,10 @@ func (p *ChunkingProcessor) InspectDocument(ctx context.Context, req *pb.Execute
 	}
 	tmpFile.Close()
 
-	inspectPageLimit := os.Getenv("INSPECT_PAGE_LIMIT")
-	if inspectPageLimit == "" {
-		inspectPageLimit = "2"
-	}
-	// Use pdftotext to extract text from first N pages
-	cmd := exec.CommandContext(ctx, "pdftotext", "-q", "-l", inspectPageLimit, tmpFile.Name(), "-")
-	outBytes, err := cmd.Output()
-
-	isScanned := false
+	isScanned, err := detectIsScannedPDF(tmpFile.Name())
 	if err != nil {
-		addTrace(fmt.Sprintf("pdftotext failed (assuming scanned): %v", err), "WARN")
+		addTrace(fmt.Sprintf("detectIsScannedPDF failed (assuming scanned): %v", err), "WARN")
 		isScanned = true
-	} else {
-		text := strings.TrimSpace(string(outBytes))
-
-		inspectTextThreshold := 50
-		thresholdStr := os.Getenv("INSPECT_TEXT_THRESHOLD")
-		if thresholdStr != "" {
-			fmt.Sscanf(thresholdStr, "%d", &inspectTextThreshold)
-		}
-
-		// If very little text is extracted, it's likely a scanned document
-		if len(text) < inspectTextThreshold {
-			isScanned = true
-		}
 	}
 
 	// We don't have IsMultiDocument logic here yet, we'll assume false or let downstream handle it.

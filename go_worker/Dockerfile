@@ -24,8 +24,9 @@ RUN apk --no-cache add ca-certificates poppler-utils
 
 WORKDIR /app
 
-# Copy the static binary from the builder
+# Copy the static binary and db folder from the builder
 COPY --from=builder /doc_processing_service_bin .
+COPY --from=builder /app/document_processing_service/db ./db
 
 EXPOSE 50054
 

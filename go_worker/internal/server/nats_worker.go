@@ -14,8 +14,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"document_processing_service/internal/db"
 	"document_processing_service/internal/processor"
 	"document_processing_service/internal/storage"
+
+	"gorm.io/gorm"
 
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/identityparser"
@@ -30,16 +33,24 @@ const (
 )
 
 type NatsServer struct {
-	nc      *nats.Conn
-	js      jetstream.JetStream
-	chunker *processor.ChunkingProcessor
+	nc             *nats.Conn
+	js             jetstream.JetStream
+	chunker        *processor.ChunkingProcessor
+	cppMlClient    pb.CppMlWorkerServiceClient
+	dotnetMlClient pb.MlWorkerServiceClient
+	db             *gorm.DB
+	store          storage.Manager
 }
 
-func NewNatsServer(nc *nats.Conn, js jetstream.JetStream, aiClient pb.DocumentProcessorClient, store storage.Manager) *NatsServer {
+func NewNatsServer(nc *nats.Conn, js jetstream.JetStream, aiClient pb.DocumentProcessorClient, store storage.Manager, cppMlClient pb.CppMlWorkerServiceClient, dotnetMlClient pb.MlWorkerServiceClient, db *gorm.DB) *NatsServer {
 	return &NatsServer{
-		nc:      nc,
-		js:      js,
-		chunker: processor.NewChunkingProcessor(aiClient, store),
+		nc:             nc,
+		js:             js,
+		chunker:        processor.NewChunkingProcessor(aiClient, store),
+		cppMlClient:    cppMlClient,
+		dotnetMlClient: dotnetMlClient,
+		db:             db,
+		store:          store,
 	}
 }
 
@@ -59,6 +70,12 @@ func (s *NatsServer) Start(ctx context.Context) error {
 			FilterSubjects: []string{"worker.doc.>"}, // Or from env if necessary, assuming only durable and stream are hard violations mentioned
 			MaxAckPending:  envutil.MustGetInt("MAX_ACK_PENDING"),
 			AckWait:        envutil.MustGetDuration("WORKER_ACK_WAIT"),
+			BackOff: []time.Duration{
+				5 * time.Second,
+				30 * time.Second,
+				1 * time.Minute,
+				5 * time.Minute,
+			},
 		})
 		if err == nil {
 			break
@@ -71,8 +88,10 @@ func (s *NatsServer) Start(ctx context.Context) error {
 	}
 
 	logger.Info("DocProcessor", "Starting Document Processing NATS consumer...")
+	workerPoolSize := envutil.GetIntOrDefault("WORKER_POOL_SIZE", 10)
+	sem := make(chan struct{}, workerPoolSize)
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		s.processMessage(ctx, msg)
+		go s.HandleMessageWithRecovery(ctx, msg, sem)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start consuming: %w", err)
@@ -81,6 +100,25 @@ func (s *NatsServer) Start(ctx context.Context) error {
 	<-ctx.Done()
 	cc.Stop()
 	return nil
+}
+
+func (s *NatsServer) HandleMessageWithRecovery(ctx context.Context, msg jetstream.Msg, sem chan struct{}) {
+	sem <- struct{}{}
+	defer func() {
+		<-sem
+		if r := recover(); r != nil {
+			var t, a, j = "unknown", "unknown", "unknown"
+			var req pb.ExecuteTaskRequest
+			if err := proto.Unmarshal(msg.Data(), &req); err == nil && req.Identity != nil {
+				t = req.Identity.TenantId
+				a = req.Identity.AppId
+				j = req.Identity.JobId
+			}
+			logger.Error("DocProcessor", "Panic recovered in NATS consumer goroutine for TenantID: %s, AppID: %s, JobID: %s. Error: %v", t, a, j, r)
+			msg.NakWithDelay(5 * time.Second)
+		}
+	}()
+	s.processMessage(ctx, msg)
 }
 
 func (s *NatsServer) sendErrorReply(ctx context.Context, replySubj string, code string, msgStr string, identity *pb.InfrastructureIdentity) {
@@ -342,6 +380,10 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		structResult, processErr = s.chunker.InspectDocument(ctx, &req, executeTaskPayload.Storage.DocumentUri, func(msg string, level string) {
 			logger.Info("DocProcessor", "[%s] %s", level, msg)
 		})
+	} else if req.GetTaskSubject() == "WORKER.DOCUMENT_PROCESSING.CPP_ML" {
+		structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
+	} else if req.GetTaskSubject() == "WORKER.DOCUMENT_PROCESSING.DOTNET_ML" {
+		structResult, processErr = s.handleDotnetMLRequest(ctx, &req, executeTaskPayload, identity)
 	} else {
 		chunkReq := &pb.ChunkDocumentRequest{
 			Identity:        req.GetIdentity(),
@@ -407,4 +449,159 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	}
 
 	s.ackMessage(msg, startTime, identity, attempt)
+}
+
+func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTaskRequest, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (res *structpb.Struct, err error) {
+	now := time.Now()
+	metric := db.MlMetric{
+		TenantID:  identity.GetTenantId(),
+		AppID:     identity.GetAppId(),
+		JobID:     identity.GetJobId(),
+		StepName:  "RedactPii",
+		Status:    "STARTED",
+		StartedAt: now,
+	}
+	if s.db != nil {
+		s.db.Create(&metric)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			metric.Status = "FAILED"
+			metric.ErrorMessage = fmt.Sprintf("panic: %v", r)
+			comp := time.Now()
+			metric.CompletedAt = &comp
+			if s.db != nil {
+				s.db.Save(&metric)
+			}
+			panic(r)
+		} else if err != nil {
+			metric.Status = "FAILED"
+			metric.ErrorMessage = err.Error()
+			comp := time.Now()
+			metric.CompletedAt = &comp
+			if s.db != nil {
+				s.db.Save(&metric)
+			}
+		} else {
+			metric.Status = "COMPLETED"
+			comp := time.Now()
+			metric.CompletedAt = &comp
+			if s.db != nil {
+				s.db.Save(&metric)
+			}
+		}
+	}()
+
+	// Boundary: gRPC call to cpp_ml_worker
+	// We dispatch a synchronous gRPC call passing the RedactDocumentRequest using the Document URI.
+	// This ensures we block the NATS consumer so that the message isn't ACKed until the worker finishes,
+	// keeping data safe. The ack window extender handles the NATS message timeouts.
+	mlReq := &pb.RedactDocumentRequest{
+		Identity:    identity,
+		DocumentUri: payload.Storage.DocumentUri,	}
+
+	if s.cppMlClient == nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML client not configured"))
+	}
+
+	resp, mlErr := s.cppMlClient.RedactDocument(ctx, mlReq)
+	if mlErr != nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML RedactDocument RPC failed: %w", mlErr))
+	}
+	if !resp.GetSuccess() {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML RedactDocument returned false: %s", resp.GetErrorMessage()))
+	}
+
+	resultMap := map[string]interface{}{
+		"redacted_document_uri": payload.Storage.DocumentUri,	}
+
+	resStruct, structErr := structpb.NewStruct(resultMap)
+	if structErr != nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: failed to create structResult: %w", structErr))
+	}
+
+	return resStruct, nil
+}
+
+func (s *NatsServer) handleDotnetMLRequest(ctx context.Context, req *pb.ExecuteTaskRequest, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (res *structpb.Struct, err error) {
+	now := time.Now()
+	metric := db.MlMetric{
+		TenantID:  identity.GetTenantId(),
+		AppID:     identity.GetAppId(),
+		JobID:     identity.GetJobId(),
+		StepName:  "RedactPii_DotNet",
+		Status:    "STARTED",
+		StartedAt: now,
+	}
+	if s.db != nil {
+		s.db.Create(&metric)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			metric.Status = "FAILED"
+			metric.ErrorMessage = fmt.Sprintf("panic: %v", r)
+			comp := time.Now()
+			metric.CompletedAt = &comp
+			if s.db != nil {
+				s.db.Save(&metric)
+			}
+			panic(r)
+		} else if err != nil {
+			metric.Status = "FAILED"
+			metric.ErrorMessage = err.Error()
+			comp := time.Now()
+			metric.CompletedAt = &comp
+			if s.db != nil {
+				s.db.Save(&metric)
+			}
+		} else {
+			metric.Status = "COMPLETED"
+			comp := time.Now()
+			metric.CompletedAt = &comp
+			if s.db != nil {
+				s.db.Save(&metric)
+			}
+		}
+	}()
+
+	if s.dotnetMlClient == nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: Dotnet ML client not configured"))
+	}
+
+	rawBytes, err := s.store.FetchFile(ctx, payload.Storage.DocumentUri, identity)
+	if err != nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: failed to fetch document for redaction: %w", err))
+	}
+
+	mlReq := &pb.PiiRedactionRequest{
+		Identity:       identity,
+		TargetPiiTypes: []pb.PiiType{pb.PiiType_PII_TYPE_PERSON_NAME, pb.PiiType_PII_TYPE_SSN, pb.PiiType_PII_TYPE_PHONE_NUMBER, pb.PiiType_PII_TYPE_EMAIL, pb.PiiType_PII_TYPE_ADDRESS}, // Defaulting to some standard types as this comes from custom instructions usually
+		RawFileBytes:   rawBytes,
+	}
+
+	resp, mlErr := s.dotnetMlClient.RedactPii(ctx, mlReq)
+	if mlErr != nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML RedactPii RPC failed: %w", mlErr))
+	}
+	if !resp.GetSuccess() {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML RedactPii returned false: %s", resp.GetErrorMessage()))
+	}
+
+	redactedUri, err := s.store.SaveFile(ctx, payload.Storage.DocumentUri+"_redacted.pdf", identity, resp.GetRedactedFileBytes())
+	if err != nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: failed to save redacted document: %w", err))
+	}
+
+	resultMap := map[string]interface{}{
+		"redacted_document_uri": redactedUri,
+	}
+
+	resStruct, structErr := structpb.NewStruct(resultMap)
+	if structErr != nil {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: failed to create structResult: %w", structErr))
+	}
+
+	return resStruct, nil
 }

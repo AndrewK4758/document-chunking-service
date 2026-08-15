@@ -1,0 +1,28 @@
+{
+  "time": "2026-08-15T11:02:13.998293431-04:00",
+  "level": "INFO",
+  "msg": "Successfully ran database migrations.",
+  "service_name": "document_processing_service",
+  "component": "DB"
+}
+{
+  "time": "2026-08-15T11:02:14.00226362-04:00",
+  "level": "INFO",
+  "msg": "Successfully connected to NATS at nats://127.0.0.1:4222",
+  "service_name": "document_processing_service",
+  "component": "DocProcessor"
+}
+{
+  "time": "2026-08-15T11:02:14.002318924-04:00",
+  "level": "INFO",
+  "msg": "Document Processing Service listening on [::]:11114",
+  "service_name": "document_processing_service",
+  "component": "DocProcessor"
+}
+{
+  "time": "2026-08-15T11:02:14.009819568-04:00",
+  "level": "INFO",
+  "msg": "Starting Document Processing NATS consumer...",
+  "service_name": "document_processing_service",
+  "component": "DocProcessor"
+}
