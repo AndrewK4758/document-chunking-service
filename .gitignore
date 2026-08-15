@@ -9,3 +9,4 @@ build/
 model.onnx
 tokenizer.json
 .idea/
+.env

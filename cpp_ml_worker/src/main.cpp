@@ -1,6 +1,10 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cstdlib>
 
 #include <grpcpp/grpcpp.h>
 #include "ml_worker.grpc.pb.h"
@@ -16,6 +20,21 @@ using grpc::Status;
 using ml::worker::v1::CppMlWorkerService;
 using ml::worker::v1::RedactDocumentRequest;
 using ml::worker::v1::RedactDocumentResponse;
+
+void load_env_file(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        auto pos = line.find('=');
+        if (pos != std::string::npos) {
+            std::string key = line.substr(0, pos);
+            std::string value = line.substr(pos + 1);
+            setenv(key.c_str(), value.c_str(), 0);
+        }
+    }
+}
 
 namespace {
     class CppMlWorkerServiceImpl final : public CppMlWorkerService::Service {
@@ -71,6 +90,7 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+    load_env_file(".env");
     std::cout << "Starting C++ ML Worker..." << std::endl;
 
     // Provide default paths, these could be overridden by env vars
