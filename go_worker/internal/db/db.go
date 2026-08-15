@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/AndrewK4758/shared_utils/envutil"
@@ -36,7 +37,26 @@ func InitDB() *gorm.DB {
 		panic(fmt.Errorf("failed to create migrate postgres driver: %w", err))
 	}
 
-	migrationsDir := envutil.GetStringOrDefault("MIGRATIONS_DIR", "db/migrations")
+	migrationsDir := envutil.GetStringOrDefault("MIGRATIONS_DIR", "")
+	if migrationsDir == "" {
+		fallbackPaths := []string{
+			"db/migrations",
+			"go_worker/db/migrations",
+			"document_processing_service/go_worker/db/migrations",
+			"../db/migrations",
+			"../../db/migrations",
+		}
+		for _, p := range fallbackPaths {
+			if _, err := os.Stat(p); err == nil {
+				migrationsDir = p
+				break
+			}
+		}
+		if migrationsDir == "" {
+			migrationsDir = "db/migrations" // ultimate fallback
+		}
+	}
+	
 	migrationsDirAbs, err := filepath.Abs(migrationsDir)
 	if err != nil {
 		panic(fmt.Errorf("failed to get absolute path for migrations: %w", err))

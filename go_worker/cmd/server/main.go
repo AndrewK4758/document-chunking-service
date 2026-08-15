@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"path/filepath"
 
 	"github.com/AndrewK4758/shared_utils/envutil"
 	"google.golang.org/grpc/credentials/insecure"
@@ -11,8 +12,8 @@ import (
 	"github.com/AndrewK4758/shared_utils/logger"
 	"github.com/AndrewK4758/shared_utils/natsutil"
 
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/grpc"
 
 	"document_processing_service/internal/db"
@@ -23,7 +24,18 @@ import (
 )
 
 func main() {
-	envutil.LoadEnv(".env", "document_processing_service/.env", "../.env", "../../.env")
+	// Construct an absolute fallback path for local Rider execution
+	absFallback, _ := filepath.Abs("/home/ak/projects/doc_processor_service/document_processing_service/go_worker/.env")
+
+	envutil.LoadEnv(
+		".env",
+		"../.env",
+		"../../.env",
+		"../../../.env",
+		"document_processing_service/go_worker/.env",
+		"go_worker/.env",
+		absFallback,
+	)
 	logger.InitLogger()
 
 	// Initialize Database and run migrations
@@ -101,9 +113,9 @@ func main() {
 			  "RetryableStatusCodes": ["UNAVAILABLE", "DEADLINE_EXCEEDED"]
 		  }
 		}]}`
-	
+
 	mlConn, err := grpc.NewClient(
-		mlWorkerUrl, 
+		mlWorkerUrl,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(retryPolicy),
 	)
