@@ -2,7 +2,6 @@
 
 #include <string>
 #include <vector>
-#include "MLInferenceEngine.h"
 
 extern "C" {
 #include "mupdf/fitz.h"
@@ -16,13 +15,13 @@ struct PageTextData {
 
 class MuPDFWrapper {
 public:
-    MuPDFWrapper(const std::string& pdf_data);
+    explicit MuPDFWrapper(const std::string& pdf_data);
     ~MuPDFWrapper();
 
-    int GetPageCount() const;
-    PageTextData ExtractPageText(int page_index) const;
+    [[nodiscard]] int GetPageCount() const;
+    [[nodiscard]] PageTextData ExtractPageText(int page_index) const;
     void ApplyRedactions(int page_index, const std::vector<fz_rect>& bboxes) const;
-    std::string GetRedactedPdf() const;
+    [[nodiscard]] std::string GetRedactedPdf() const;
 
 private:
     fz_context* ctx_;

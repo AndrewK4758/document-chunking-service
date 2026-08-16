@@ -174,18 +174,27 @@ func (s *NatsServer) ackMessage(msg jetstream.Msg, startTime time.Time, identity
 }
 
 func buildDocsStructResult(docs []*pb.ProcessedDocument) (*structpb.Struct, error) {
-	jsonBytes, err := json.Marshal(docs)
-	if err != nil {
-		return nil, err
+	docList := make([]interface{}, len(docs))
+	m := protojson.MarshalOptions{
+		UseProtoNames:   true,
+		EmitUnpopulated: true,
 	}
-	var structResult structpb.Struct
-	jsonString := fmt.Sprintf(`{"documents": %s}`, string(jsonBytes))
-	err = protojson.Unmarshal([]byte(jsonString), &structResult)
-	if err != nil {
-		logger.Warn("DocProcessor", "Failed to unmarshal docs to structpb.Struct: %v", err)
-		return nil, nil
+	for i, doc := range docs {
+		docBytes, err := m.Marshal(doc)
+		if err != nil {
+			return nil, err
+		}
+		var docMap map[string]interface{}
+		if err := json.Unmarshal(docBytes, &docMap); err != nil {
+			return nil, err
+		}
+		docList[i] = docMap
 	}
-	return &structResult, nil
+	
+	resultMap := map[string]interface{}{
+		"documents": docList,
+	}
+	return structpb.NewStruct(resultMap)
 }
 
 func (s *NatsServer) publishReply(ctx context.Context, msg jetstream.Msg, replySubj string, resp *pb.PerformActionResponse, startTime time.Time, identity *pb.InfrastructureIdentity, attempt uint64) error {
@@ -361,12 +370,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: missing payload"))
 	}
 
-	reqJson, err := protojson.Marshal(&req)
-	if err == nil {
-		logger.Info("DocProcessor", "DEQUEUED Input Payload: %s", string(reqJson))
-	} else {
-		logger.Info("DocProcessor", "DEQUEUED Input Payload: failed to marshal proto")
-	}
+	logger.Info("DocProcessor", "DEQUEUED Input Payload for TaskSubject: %s", req.GetTaskSubject())
 
 	parser := workflowparser.NewTaskRequestParser(&req)
 	parser.MustValidateRootPayloadStrict(identity.GetJobId())
@@ -431,17 +435,11 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	}
 
 	if resp.ActionResult != nil {
-		outBytes, err := protojson.Marshal(resp.ActionResult)
-		if err == nil {
-			logger.Info("DocProcessor", "DISPATCHING ActionResult Output: %s", string(outBytes))
-		} else {
-			outJson, jsonErr := json.Marshal(resp.ActionResult.AsMap())
-			if jsonErr == nil {
-				logger.Info("DocProcessor", "DISPATCHING ActionResult Output: %s", string(outJson))
-			} else {
-				logger.Info("DocProcessor", "DISPATCHING ActionResult Output: <failed to marshal>")
-			}
+		keys := make([]string, 0, len(resp.ActionResult.Fields))
+		for k := range resp.ActionResult.Fields {
+			keys = append(keys, k)
 		}
+		logger.Info("DocProcessor", "DISPATCHING ActionResult Output keys: %v", keys)
 	} else {
 		logger.Info("DocProcessor", "DISPATCHING ActionResult Output: {}")
 	}
@@ -469,30 +467,16 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 	}
 
 	defer func() {
-		if r := recover(); r != nil {
-			metric.Status = "FAILED"
-			metric.ErrorMessage = fmt.Sprintf("panic: %v", r)
-			comp := time.Now()
-			metric.CompletedAt = &comp
-			if s.db != nil {
-				s.db.Save(&metric)
-			}
-			panic(r)
-		} else if err != nil {
+		if err != nil {
 			metric.Status = "FAILED"
 			metric.ErrorMessage = err.Error()
-			comp := time.Now()
-			metric.CompletedAt = &comp
-			if s.db != nil {
-				s.db.Save(&metric)
-			}
 		} else {
 			metric.Status = "COMPLETED"
-			comp := time.Now()
-			metric.CompletedAt = &comp
-			if s.db != nil {
-				s.db.Save(&metric)
-			}
+		}
+		comp := time.Now()
+		metric.CompletedAt = &comp
+		if s.db != nil {
+			s.db.Save(&metric)
 		}
 	}()
 
@@ -542,30 +526,16 @@ func (s *NatsServer) handleDotnetMLRequest(ctx context.Context, req *pb.ExecuteT
 	}
 
 	defer func() {
-		if r := recover(); r != nil {
-			metric.Status = "FAILED"
-			metric.ErrorMessage = fmt.Sprintf("panic: %v", r)
-			comp := time.Now()
-			metric.CompletedAt = &comp
-			if s.db != nil {
-				s.db.Save(&metric)
-			}
-			panic(r)
-		} else if err != nil {
+		if err != nil {
 			metric.Status = "FAILED"
 			metric.ErrorMessage = err.Error()
-			comp := time.Now()
-			metric.CompletedAt = &comp
-			if s.db != nil {
-				s.db.Save(&metric)
-			}
 		} else {
 			metric.Status = "COMPLETED"
-			comp := time.Now()
-			metric.CompletedAt = &comp
-			if s.db != nil {
-				s.db.Save(&metric)
-			}
+		}
+		comp := time.Now()
+		metric.CompletedAt = &comp
+		if s.db != nil {
+			s.db.Save(&metric)
 		}
 	}()
 
@@ -620,50 +590,38 @@ func (s *NatsServer) handleDualMLRequest(ctx context.Context, req *pb.ExecuteTas
 
 	go func() {
 		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				cppErr = fmt.Errorf("panic: %v", r)
-			}
-		}()
 		cppResult, cppErr = s.handleCppMLRequest(ctx, req, payload, identity)
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				dotnetErr = fmt.Errorf("panic: %v", r)
-			}
-		}()
 		dotnetResult, dotnetErr = s.handleDotnetMLRequest(ctx, req, payload, identity)
 	}()
 
 	wg.Wait()
 
-	cppJson := "{}"
+	diffMetrics := map[string]interface{}{
+		"cpp_has_error":     cppErr != nil,
+		"dotnet_has_error":  dotnetErr != nil,
+		"cpp_keys_count":    0,
+		"dotnet_keys_count": 0,
+		"keys_match":        false,
+	}
+
 	if cppResult != nil {
-		b, err := json.Marshal(cppResult.AsMap())
-		if err == nil {
-			cppJson = string(b)
-		}
+		diffMetrics["cpp_keys_count"] = len(cppResult.Fields)
 	}
-	if cppErr != nil {
-		cppJson = fmt.Sprintf(`{"error": "%s"}`, cppErr.Error())
-	}
-
-	dotnetJson := "{}"
 	if dotnetResult != nil {
-		b, err := json.Marshal(dotnetResult.AsMap())
-		if err == nil {
-			dotnetJson = string(b)
-		}
+		diffMetrics["dotnet_keys_count"] = len(dotnetResult.Fields)
 	}
-	if dotnetErr != nil {
-		dotnetJson = fmt.Sprintf(`{"error": "%s"}`, dotnetErr.Error())
-	}
+	diffMetrics["keys_match"] = diffMetrics["cpp_keys_count"] == diffMetrics["dotnet_keys_count"]
 
-	diffJson := fmt.Sprintf(`{"cpp_ml_worker": %s, "dotnet_ml_worker": %s}`, cppJson, dotnetJson)
-	logger.Info("DocProcessor", "Dual ML Worker Result Diff for JobID %s: %s", identity.GetJobId(), diffJson)
+	metricsBytes, err := json.Marshal(diffMetrics)
+	if err == nil {
+		logger.Info("DocProcessor", "Dual ML Worker Result Diff for JobID %s: %s", identity.GetJobId(), string(metricsBytes))
+	} else {
+		logger.Info("DocProcessor", "Dual ML Worker Result Diff for JobID %s: <failed to marshal metrics>", identity.GetJobId())
+	}
 
 	if cppErr != nil {
 		return nil, cppErr
