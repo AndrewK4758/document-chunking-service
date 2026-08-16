@@ -620,11 +620,21 @@ func (s *NatsServer) handleDualMLRequest(ctx context.Context, req *pb.ExecuteTas
 
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				cppErr = fmt.Errorf("panic: %v", r)
+			}
+		}()
 		cppResult, cppErr = s.handleCppMLRequest(ctx, req, payload, identity)
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				dotnetErr = fmt.Errorf("panic: %v", r)
+			}
+		}()
 		dotnetResult, dotnetErr = s.handleDotnetMLRequest(ctx, req, payload, identity)
 	}()
 
