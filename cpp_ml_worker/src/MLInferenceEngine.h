@@ -4,9 +4,9 @@
 #include <vector>
 #include <memory>
 
-extern "C" {
+#include <stdckdint.h>
+
 #include "mupdf/fitz.h"
-}
 
 // Interface for Tokenizer to allow mocking in tests
 class ITokenizer {

@@ -20,7 +20,7 @@ struct GeneratedSpans {
     auto span_idx_mut() {
         return std::mdspan<int64_t, std::extents<size_t, std::dynamic_extent, 2>>(span_idx_storage.data(), num_spans, 2);
     }
-    auto span_mask() const {
+    [[nodiscard]] auto span_mask() const {
         return std::span<const int64_t>(span_mask_storage.data(), num_spans);
     }
     auto span_mask_mut() {

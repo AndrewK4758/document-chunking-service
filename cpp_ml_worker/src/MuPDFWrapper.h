@@ -3,10 +3,10 @@
 #include <string>
 #include <vector>
 
-extern "C" {
+#include <stdckdint.h>
+
 #include "mupdf/fitz.h"
 #include "mupdf/pdf.h"
-}
 
 struct PageTextData {
     std::string text;
