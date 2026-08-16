@@ -16,3 +16,14 @@ func (m *MockCppMlWorkerServiceClient) RedactDocument(ctx context.Context, in *p
 		return m.RedactDocumentFunc(ctx, in, opts...)
 	}
 	return &pb.RedactDocumentResponse{Success: true}, nil}
+
+type MockMlWorkerServiceClient struct {
+	RedactPiiFunc func(ctx context.Context, in *pb.PiiRedactionRequest, opts ...grpc.CallOption) (*pb.PiiRedactionResponse, error)
+}
+
+func (m *MockMlWorkerServiceClient) RedactPii(ctx context.Context, in *pb.PiiRedactionRequest, opts ...grpc.CallOption) (*pb.PiiRedactionResponse, error) {
+	if m.RedactPiiFunc != nil {
+		return m.RedactPiiFunc(ctx, in, opts...)
+	}
+	return &pb.PiiRedactionResponse{Success: true}, nil
+}

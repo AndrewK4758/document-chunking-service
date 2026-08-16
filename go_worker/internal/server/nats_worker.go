@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/AndrewK4758/shared_utils/envutil"
@@ -384,6 +385,8 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
 	} else if req.GetTaskSubject() == "WORKER.DOCUMENT_PROCESSING.DOTNET_ML" {
 		structResult, processErr = s.handleDotnetMLRequest(ctx, &req, executeTaskPayload, identity)
+	} else if req.GetTaskSubject() == "WORKER.DOCUMENT_PROCESSING.DUAL_ML" {
+		structResult, processErr = s.handleDualMLRequest(ctx, &req, executeTaskPayload, identity)
 	} else {
 		chunkReq := &pb.ChunkDocumentRequest{
 			Identity:        req.GetIdentity(),
@@ -604,4 +607,57 @@ func (s *NatsServer) handleDotnetMLRequest(ctx context.Context, req *pb.ExecuteT
 	}
 
 	return resStruct, nil
+}
+
+func (s *NatsServer) handleDualMLRequest(ctx context.Context, req *pb.ExecuteTaskRequest, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (*structpb.Struct, error) {
+	var cppResult *structpb.Struct
+	var dotnetResult *structpb.Struct
+	var cppErr error
+	var dotnetErr error
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		cppResult, cppErr = s.handleCppMLRequest(ctx, req, payload, identity)
+	}()
+
+	go func() {
+		defer wg.Done()
+		dotnetResult, dotnetErr = s.handleDotnetMLRequest(ctx, req, payload, identity)
+	}()
+
+	wg.Wait()
+
+	cppJson := "{}"
+	if cppResult != nil {
+		b, err := json.Marshal(cppResult.AsMap())
+		if err == nil {
+			cppJson = string(b)
+		}
+	}
+	if cppErr != nil {
+		cppJson = fmt.Sprintf(`{"error": "%s"}`, cppErr.Error())
+	}
+
+	dotnetJson := "{}"
+	if dotnetResult != nil {
+		b, err := json.Marshal(dotnetResult.AsMap())
+		if err == nil {
+			dotnetJson = string(b)
+		}
+	}
+	if dotnetErr != nil {
+		dotnetJson = fmt.Sprintf(`{"error": "%s"}`, dotnetErr.Error())
+	}
+
+	diffJson := fmt.Sprintf(`{"cpp_ml_worker": %s, "dotnet_ml_worker": %s}`, cppJson, dotnetJson)
+	logger.Info("DocProcessor", "Dual ML Worker Result Diff for JobID %s: %s", identity.GetJobId(), diffJson)
+
+	if cppErr != nil {
+		return nil, cppErr
+	}
+
+	return cppResult, nil
 }
