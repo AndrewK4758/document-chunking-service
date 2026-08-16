@@ -17,6 +17,13 @@ public interface IRedactionPipeline
 
 public class RedactionPipeline : IRedactionPipeline
 {
+    private readonly IModelService _modelService;
+
+    public RedactionPipeline(IModelService modelService)
+    {
+        _modelService = modelService;
+    }
+
     public (byte[] RedactedBytes, int RedactedCount) Redact(byte[] inputPdfBytes, IReadOnlyList<PiiType> targetTypes)
     {
         if (inputPdfBytes == null || inputPdfBytes.Length == 0)
@@ -35,8 +42,8 @@ public class RedactionPipeline : IRedactionPipeline
                 var page = pigDoc.GetPage(i);
                 foreach (var word in page.GetWords())
                 {
-                    var piiType = MockInference(word.Text);
-                    if (piiType != PiiType.Unspecified && targets.Contains(piiType))
+                    var isPii = _modelService.Predict(word.Text).Any(t => t.IsPii);
+                    if (isPii && targets.Any())
                     {
                         redactions.Add(new RedactionBox(
                             i,
@@ -83,29 +90,6 @@ public class RedactionPipeline : IRedactionPipeline
                 return (outStream.ToArray(), redactedCount);
             }
         }
-    }
-
-    private static PiiType MockInference(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        if (lower.Contains("ssn") || lower.Contains("000-00-0000"))
-        {
-            return PiiType.Ssn;
-        }
-        if (lower == "john" || lower == "doe")
-        {
-            return PiiType.PersonName;
-        }
-        if (lower.Contains("@") && lower.Contains(".com"))
-        {
-            return PiiType.Email;
-        }
-        if (lower.StartsWith("$"))
-        {
-            return PiiType.Money;
-        }
-
-        return PiiType.Unspecified;
     }
 
     private readonly record struct RedactionBox(int PageNumber, double Left, double Bottom, double Width, double Height);

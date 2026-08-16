@@ -4,6 +4,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddGrpc();
+builder.Services.AddSingleton<IModelService>(sp => new GlinerModelService("/home/ak/projects/ml"));
 builder.Services.AddSingleton<IRedactionPipeline, RedactionPipeline>();
 
 var app = builder.Build();

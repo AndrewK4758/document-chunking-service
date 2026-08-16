@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using Moq;
 using dotnet_ml_worker.Services;
 using Ml.Worker.V1;
 using PdfSharpCore.Drawing;
@@ -16,7 +17,10 @@ public class RedactionPipelineTests
     {
         // Arrange
         byte[] pdfBytes = CreateDummyPdf("Hello John Doe and others.");
-        var pipeline = new RedactionPipeline();
+        var mockService = new Moq.Mock<IModelService>();
+        mockService.Setup(s => s.Predict(It.IsAny<string>()))
+            .Returns<string>(text => new[] { new PiiToken { Text = text, IsPii = text == "John" || text == "Doe" } });
+        var pipeline = new RedactionPipeline(mockService.Object);
         var targetTypes = new[] { PiiType.PersonName };
 
         // Act
@@ -44,8 +48,11 @@ public class RedactionPipelineTests
     {
         // Arrange
         byte[] pdfBytes = CreateDummyPdf("Hello Alice Bob and others.");
-        var pipeline = new RedactionPipeline();
-        var targetTypes = new[] { PiiType.PersonName }; // Mock inference only knows John and Doe
+        var mockService = new Moq.Mock<IModelService>();
+        mockService.Setup(s => s.Predict(It.IsAny<string>()))
+            .Returns<string>(text => new[] { new PiiToken { Text = text, IsPii = false } });
+        var pipeline = new RedactionPipeline(mockService.Object);
+        var targetTypes = new[] { PiiType.PersonName };
 
         // Act
         var (redactedBytes, count) = pipeline.Redact(pdfBytes, targetTypes);
