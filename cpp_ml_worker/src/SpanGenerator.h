@@ -14,7 +14,7 @@ struct GeneratedSpans {
     std::vector<int64_t> span_mask_storage; 
     size_t num_spans{0};
 
-    auto span_idx() const {
+    [[nodiscard]] auto span_idx() const {
         return std::mdspan<const int64_t, std::extents<size_t, std::dynamic_extent, 2>>(span_idx_storage.data(), num_spans, 2);
     }
     auto span_idx_mut() {

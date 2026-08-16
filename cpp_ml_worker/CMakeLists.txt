@@ -94,5 +94,10 @@ target_include_directories(print_onnx PRIVATE ${onnxruntime_SOURCE_DIR}/include)
 target_link_libraries(print_onnx PRIVATE onnxruntime)
 
 enable_testing()
-add_subdirectory(tests)
+find_package(GTest REQUIRED)
+include(GoogleTest)
 
+add_executable(cpp_ml_worker_test tests/test_main.cpp tests/test_span_generator.cpp)
+target_include_directories(cpp_ml_worker_test PRIVATE src)
+target_link_libraries(cpp_ml_worker_test PRIVATE worker_lib GTest::gtest_main)
+gtest_discover_tests(cpp_ml_worker_test)

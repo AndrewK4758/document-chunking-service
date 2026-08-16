@@ -2,23 +2,10 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$/.." vcs="Git" />
+    <mapping directory="$PROJECT_DIR$" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/build/_deps/tokenizers_cpp-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/build/_deps/tokenizers_cpp-src/msgpack" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/build/_deps/tokenizers_cpp-src/sentencepiece" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/build/_deps/tokenizers_cpp-src/sentencepiece/third_party/abseil-cpp" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/brotli" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/cmark-gfm" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/curl" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/extract" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/freeglut" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/freetype" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/gumbo-parser" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/harfbuzz" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/mupdf-src/thirdparty/jbig2dec" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/tokenizers_cpp-src" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/tokenizers_cpp-src/msgpack" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/tokenizers_cpp-src/sentencepiece" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/tokenizers_cpp-src/sentencepiece/third_party/abseil-cpp" vcs="Git" />
   </component>
 </project>
