@@ -1,0 +1,11 @@
+--- GlinerModelService.cs
++++ GlinerModelService.cs
+@@ -10,13 +10,14 @@
+ namespace dotnet_ml_worker.Services;
+ 
+ public class PiiToken
+ {
+     public string Text { get; set; } = string.Empty;
+-    public bool IsPii { get; set; }
++    public PiiType Type { get; set; }
+ }

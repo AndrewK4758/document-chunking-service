@@ -19,7 +19,7 @@ public class RedactionPipelineTests
         byte[] pdfBytes = CreateDummyPdf("Hello John Doe and others.");
         var mockService = new Moq.Mock<IModelService>();
         mockService.Setup(s => s.Predict(It.IsAny<string>()))
-            .Returns<string>(text => new[] { new PiiToken { Text = text, IsPii = text == "John" || text == "Doe" } });
+            .Returns<string>(text => new[] { new PiiToken { Text = text, Type = (text == "John" || text == "Doe") ? PiiType.PersonName : PiiType.Unspecified } });
         var pipeline = new RedactionPipeline(mockService.Object);
         var targetTypes = new[] { PiiType.PersonName };
 
@@ -50,7 +50,7 @@ public class RedactionPipelineTests
         byte[] pdfBytes = CreateDummyPdf("Hello Alice Bob and others.");
         var mockService = new Moq.Mock<IModelService>();
         mockService.Setup(s => s.Predict(It.IsAny<string>()))
-            .Returns<string>(text => new[] { new PiiToken { Text = text, IsPii = false } });
+            .Returns<string>(text => new[] { new PiiToken { Text = text, Type = PiiType.Unspecified } });
         var pipeline = new RedactionPipeline(mockService.Object);
         var targetTypes = new[] { PiiType.PersonName };
 

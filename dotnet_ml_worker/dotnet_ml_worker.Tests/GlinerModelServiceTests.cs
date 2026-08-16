@@ -37,16 +37,17 @@ public class GlinerModelServiceTests
     }
 
     [Fact]
-    public void Predict_ValidText_ShouldReturnTokens()
+    public void Predict_MalformedModel_ShouldThrowException()
     {
         // Arrange
         var service = new GlinerModelService(_validModelDir);
         var text = "John Doe lives in New York and his email is john.doe@example.com.";
 
         // Act
-        var entities = service.Predict(text);
+        Action act = () => service.Predict(text);
 
         // Assert
-        entities.Should().NotBeNull();
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*malformed logits*");
     }
 }

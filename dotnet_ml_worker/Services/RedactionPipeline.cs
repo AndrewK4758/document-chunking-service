@@ -42,8 +42,8 @@ public class RedactionPipeline : IRedactionPipeline
                 var page = pigDoc.GetPage(i);
                 foreach (var word in page.GetWords())
                 {
-                    var isPii = _modelService.Predict(word.Text).Any(t => t.IsPii);
-                    if (isPii && targets.Any())
+                    var tokens = _modelService.Predict(word.Text);
+                    if (tokens.Any(t => targets.Contains(t.Type)))
                     {
                         redactions.Add(new RedactionBox(
                             i,
