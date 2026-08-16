@@ -5,6 +5,8 @@
 #include <string>
 #include <cstdlib>
 
+#include <spdlog/spdlog.h>
+
 #include <grpcpp/grpcpp.h>
 #include "ml_worker.grpc.pb.h"
 #include "StorageGatewayClient.h"
@@ -23,7 +25,7 @@ using ml::worker::v1::RedactDocumentResponse;
 static void load_env_file(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
-        std::cout << "Failed to open environment file: " << path << std::endl;
+        spdlog::warn("Failed to open environment file: {}", path);
         return;
     }
     std::string line;
@@ -43,7 +45,7 @@ namespace {
     std::unique_ptr<grpc::Server> g_server;
 
     void SignalHandler(int signum) {
-        std::cout << "\nReceived signal " << signum << ". Shutting down server..." << std::endl;
+        spdlog::info("\nReceived signal {}. Shutting down server...", signum);
         if (g_server) {
             g_server->Shutdown();
         }
@@ -70,42 +72,42 @@ namespace {
                 }
 
                 std::string job_id = request->identity().job_id();
-                std::cout << "[JOB: " << job_id << "] Starting ML Redaction for URI: " << request->document_uri() << std::endl;
+                spdlog::info("[JOB: {}] Starting ML Redaction for URI: {}", job_id, request->document_uri());
 
-                std::cout << "[JOB: " << job_id << "] 1. Downloading document from Storage Gateway..." << std::endl;
+                spdlog::info("[JOB: {}] 1. Downloading document from Storage Gateway...", job_id);
                 const std::string pdf_data = storage_client_->Download(request->document_uri(), request->identity());
 
-                std::cout << "[JOB: " << job_id << "] 2. Initializing MuPDF context..." << std::endl;
+                spdlog::info("[JOB: {}] 2. Initializing MuPDF context...", job_id);
                 const MuPDFWrapper mupdf(pdf_data);
                 const int page_count = mupdf.GetPageCount();
-                std::cout << "[JOB: " << job_id << "]    -> Document loaded successfully with " << page_count << " pages." << std::endl;
+                spdlog::info("[JOB: {}]    -> Document loaded successfully with {} pages.", job_id, page_count);
 
-                std::cout << "[JOB: " << job_id << "] 3. Beginning page-by-page ML inference and redaction..." << std::endl;
+                spdlog::info("[JOB: {}] 3. Beginning page-by-page ML inference and redaction...", job_id);
                 for (int i = 0; i < page_count; i++) {
-                    std::cout << "[JOB: " << job_id << "]    -> [Page " << (i+1) << "/" << page_count << "] Extracting text and coordinates..." << std::endl;
+                    spdlog::info("[JOB: {}]    -> [Page {}/{}] Extracting text and coordinates...", job_id, i+1, page_count);
                     auto [text, char_bboxes] = mupdf.ExtractPageText(i);
                     
-                    std::cout << "[JOB: " << job_id << "]    -> [Page " << (i+1) << "/" << page_count << "] Running GLiNER ML Inference..." << std::endl;
+                    spdlog::info("[JOB: {}]    -> [Page {}/{}] Running GLiNER ML Inference...", job_id, i+1, page_count);
                     std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(text, char_bboxes);
                     
-                    std::cout << "[JOB: " << job_id << "]    -> [Page " << (i+1) << "/" << page_count << "] Identified " << bboxes.size() << " PII elements. Applying redaction blocks..." << std::endl;
+                    spdlog::info("[JOB: {}]    -> [Page {}/{}] Identified {} PII elements. Applying redaction blocks...", job_id, i+1, page_count, bboxes.size());
                     mupdf.ApplyRedactions(i, bboxes);
                 }
 
-                std::cout << "[JOB: " << job_id << "] 4. Serializing redacted PDF document back to memory..." << std::endl;
+                spdlog::info("[JOB: {}] 4. Serializing redacted PDF document back to memory...", job_id);
                 std::string redacted_pdf_data = mupdf.GetRedactedPdf();
                 
-                std::cout << "[JOB: " << job_id << "] 5. Uploading final redacted document to Storage Gateway..." << std::endl;
+                spdlog::info("[JOB: {}] 5. Uploading final redacted document to Storage Gateway...", job_id);
                 std::string storage_uri = storage_client_->Upload("redacted_" + request->document_uri(), request->identity(), redacted_pdf_data);
 
-                std::cout << "[JOB: " << job_id << "] ML Redaction Process Completed Successfully! Saved as: " << storage_uri << std::endl;
+                spdlog::info("[JOB: {}] ML Redaction Process Completed Successfully! Saved as: {}", job_id, storage_uri);
 
                 response->set_success(true);
                 response->set_error_message("");
                 return Status::OK;
 
             } catch (const std::exception& ex) {
-                std::cerr << "Fatal error during execution: " << ex.what() << std::endl;
+                spdlog::error("Fatal error during execution: {}", ex.what());
                 response->set_success(false);
                 response->set_error_message(ex.what());
                 throw; // Fail fast principle
@@ -123,7 +125,8 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, SignalHandler);
 
     load_env_file(".env");
-    std::cout << "Starting C++ ML Worker..." << std::endl;
+    spdlog::set_level(spdlog::level::info);
+    spdlog::info("Starting C++ ML Worker...");
 
     // Provide default paths, these could be overridden by env vars
     std::string model_path = "/home/ak/projects/ml/model.onnx";
@@ -153,13 +156,13 @@ int main(int argc, char** argv) {
 
     g_server = builder.BuildAndStart();
     if (!g_server) {
-        std::cerr << "Failed to bind and start gRPC server on " << server_address << std::endl;
+        spdlog::error("Failed to bind and start gRPC server on {}", server_address);
         return 1;
     }
     
-    std::cout << "Server listening on " << server_address << std::endl;
+    spdlog::info("Server listening on {}", server_address);
     g_server->Wait();
     
-    std::cout << "Server stopped cleanly." << std::endl;
+    spdlog::info("Server stopped cleanly.");
     return 0;
 }

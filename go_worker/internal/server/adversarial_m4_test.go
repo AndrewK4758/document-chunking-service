@@ -57,7 +57,7 @@ func (m *mockStreamWithCounter) Send(resp *pb.ChunkDocumentResponse) error {
 }
 
 func TestAdversarial_GRPC_StreamReceiveError(t *testing.T) {
-	srv := NewDocumentProcessingServer(nil, nil)
+	srv := NewDocumentProcessingServer(nil, nil, nil, nil)
 	stream := &mockStreamWithCounter{
 		recvErr: fmt.Errorf("gRPC transport connection broken"),
 	}
@@ -71,7 +71,7 @@ func TestAdversarial_GRPC_StreamReceiveError(t *testing.T) {
 func TestAdversarial_GRPC_StreamSendError(t *testing.T) {
 	tempDir := t.TempDir()
 	store := &mockStorage{basePath: tempDir}
-	srv := NewDocumentProcessingServer(nil, store)
+	srv := NewDocumentProcessingServer(nil, nil, nil, store)
 
 	payload, _ := structpb.NewStruct(map[string]interface{}{
 		"node_config": map[string]interface{}{},

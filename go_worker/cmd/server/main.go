@@ -167,7 +167,7 @@ func main() {
 	}()
 
 	// Register the DocumentProcessingService
-	docServer := server.NewDocumentProcessingServer(aiClient, store)
+	docServer := server.NewDocumentProcessingServer(aiClient, cppMlClient, dotnetMlClient, store)
 	pb.RegisterDocumentProcessingServiceServer(s, docServer)
 
 	logger.Info("DocProcessor", "Document Processing Service listening on %v", lis.Addr())

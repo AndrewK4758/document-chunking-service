@@ -62,7 +62,7 @@ func createTestZip(t *testing.T, files map[string]string, zipPath string) {
 func TestChunkDocument_Success(t *testing.T) {
 	tempDir := t.TempDir()
 	store := &mockStorage{basePath: tempDir}
-	srv := NewDocumentProcessingServer(nil, store)
+	srv := NewDocumentProcessingServer(nil, nil, nil, store)
 
 	zipPath := filepath.Join(tempDir, "test_valid.zip")
 
@@ -114,7 +114,7 @@ func TestChunkDocument_Success(t *testing.T) {
 func TestChunkDocument_Failure(t *testing.T) {
 	tempDir := t.TempDir()
 	store := &mockStorage{basePath: tempDir}
-	srv := NewDocumentProcessingServer(nil, store)
+	srv := NewDocumentProcessingServer(nil, nil, nil, store)
 
 	payload2, _ := structpb.NewStruct(map[string]interface{}{
 		"node_config": map[string]interface{}{},
@@ -157,7 +157,7 @@ func TestChunkDocument_Failure(t *testing.T) {
 }
 
 func TestChunkDocument_EmptyRequest(t *testing.T) {
-	srv := NewDocumentProcessingServer(nil, nil)
+	srv := NewDocumentProcessingServer(nil, nil, nil, nil)
 
 	payload3, _ := structpb.NewStruct(map[string]interface{}{
 		"node_config": map[string]interface{}{},

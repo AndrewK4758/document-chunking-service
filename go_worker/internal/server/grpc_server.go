@@ -1,12 +1,17 @@
 package server
 
 import (
-
+	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"time"
 
 	"document_processing_service/internal/processor"
 	"document_processing_service/internal/storage"
+
+	"golang.org/x/sync/errgroup"
 
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/identityparser"
@@ -17,13 +22,133 @@ import (
 
 type DocumentProcessingServer struct {
 	pb.UnimplementedDocumentProcessingServiceServer
-	chunker *processor.ChunkingProcessor
+	chunker      *processor.ChunkingProcessor
+	cppMlWorker  pb.CppMlWorkerServiceClient
+	netMlWorker  pb.MlWorkerServiceClient
+	store        storage.Manager
 }
 
-func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, store storage.Manager) *DocumentProcessingServer {
+func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, cppMlWorker pb.CppMlWorkerServiceClient, netMlWorker pb.MlWorkerServiceClient, store storage.Manager) *DocumentProcessingServer {
 	return &DocumentProcessingServer{
-		chunker: processor.NewChunkingProcessor(aiClient, store),
+		chunker:      processor.NewChunkingProcessor(aiClient, store),
+		cppMlWorker:  cppMlWorker,
+		netMlWorker:  netMlWorker,
+		store:        store,
 	}
+}
+
+func (s *DocumentProcessingServer) ProcessDocument(ctx context.Context, req *pb.ProcessDocRequest) (*pb.ProcessDocResponse, error) {
+	if req == nil || req.DocumentUri == "" || req.Identity == nil {
+		panic(fmt.Errorf("action failed for job ProcessDocument: missing required document_uri or identity"))
+	}
+
+	isDev := os.Getenv("APP_ENV") == "development"
+	timeout := 5 * time.Minute
+	if isDev {
+		timeout = 60 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	fileBytes, err := s.store.FetchFile(ctx, req.DocumentUri, req.Identity)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download document from storage gateway: %w", err)
+	}
+
+	var g errgroup.Group
+	var cppSuccess, netSuccess bool
+	var cppDuration, netDuration time.Duration
+	var cppErr, netErr error
+
+	g.Go(func() error {
+		start := time.Now()
+		resp, err := s.cppMlWorker.RedactDocument(ctx, &pb.RedactDocumentRequest{
+			DocumentUri: req.DocumentUri,
+			Identity:    req.Identity,
+		})
+		cppDuration = time.Since(start)
+		if err != nil {
+			cppErr = err
+			return nil
+		}
+		cppSuccess = resp.GetSuccess()
+		if !cppSuccess {
+			cppErr = fmt.Errorf("cpp worker returned failure: %s", resp.GetErrorMessage())
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		start := time.Now()
+		resp, err := s.netMlWorker.RedactPii(ctx, &pb.PiiRedactionRequest{
+			Identity:       req.Identity,
+			TargetPiiTypes: req.TargetPiiTypes,
+			RawFileBytes:   fileBytes,
+		})
+		netDuration = time.Since(start)
+		if err != nil {
+			netErr = err
+			return nil
+		}
+		netSuccess = resp.GetSuccess()
+		if !netSuccess {
+			netErr = fmt.Errorf("net worker returned failure: %s", resp.GetErrorMessage())
+		}
+		return nil
+	})
+
+	_ = g.Wait()
+
+	logFile := filepath.Join("..", "..", "logs", "benchmark.log")
+	if os.Getenv("PROJECT_ROOT") != "" {
+		logFile = filepath.Join(os.Getenv("PROJECT_ROOT"), "logs", "benchmark.log")
+	} else {
+		absPath, err := filepath.Abs("../../logs/benchmark.log")
+		if err == nil {
+			logFile = absPath
+		}
+	}
+	
+	// Create logs directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(logFile), 0755); err != nil {
+		logger.Error("DocProcessor", "Failed to create logs directory: %v", err)
+	}
+
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		logLine := fmt.Sprintf("[%s] JobId: %s, AppId: %s, CppSuccess: %v, CppTime: %s, NetSuccess: %v, NetTime: %s\n",
+			time.Now().Format(time.RFC3339),
+			req.Identity.GetJobId(),
+			req.Identity.GetAppId(),
+			cppSuccess,
+			cppDuration,
+			netSuccess,
+			netDuration,
+		)
+		f.WriteString(logLine)
+		f.Close()
+	} else {
+		logger.Error("DocProcessor", "Failed to write to benchmark log file: %v", err)
+	}
+
+	success := cppSuccess || netSuccess
+	var errMsgs []string
+	if cppErr != nil {
+		errMsgs = append(errMsgs, cppErr.Error())
+	}
+	if netErr != nil {
+		errMsgs = append(errMsgs, netErr.Error())
+	}
+
+	errMsg := ""
+	if len(errMsgs) > 0 {
+		errMsg = fmt.Sprintf("errors: %v", errMsgs)
+	}
+
+	return &pb.ProcessDocResponse{
+		Success:      success,
+		ErrorMessage: errMsg,
+	}, nil
 }
 
 func extractDocUri(req *pb.ChunkDocumentRequest) (string, error) {

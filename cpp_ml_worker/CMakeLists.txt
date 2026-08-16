@@ -7,6 +7,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out)
 
 find_package(gRPC REQUIRED)
 find_package(Protobuf REQUIRED)
+find_package(spdlog REQUIRED)
+find_package(fmt REQUIRED)
 
 include(FetchContent)
 
@@ -81,6 +83,8 @@ target_link_libraries(worker_lib PUBLIC
   onnxruntime
   tokenizers_cpp
   mupdf
+  spdlog::spdlog
+  fmt::fmt
 )
 
 add_executable(cpp_ml_worker src/main.cpp)
@@ -91,7 +95,7 @@ target_link_libraries(test_local PRIVATE worker_lib)
 
 add_executable(print_onnx src/print_onnx.cpp)
 target_include_directories(print_onnx PRIVATE ${onnxruntime_SOURCE_DIR}/include)
-target_link_libraries(print_onnx PRIVATE onnxruntime)
+target_link_libraries(print_onnx PRIVATE onnxruntime spdlog::spdlog fmt::fmt)
 
 enable_testing()
 find_package(GTest REQUIRED)
