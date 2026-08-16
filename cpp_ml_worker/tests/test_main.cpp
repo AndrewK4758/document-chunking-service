@@ -80,6 +80,12 @@ TEST(WorkerTests, InferenceEngineCalculatesCorrectBBoxes) {
 TEST(WorkerTests, MuPDFWrapperExtractsText) {
     try {
         std::ifstream file("tests/dummy.pdf", std::ios::binary);
+        if (!file.is_open()) {
+            file.open("../tests/dummy.pdf", std::ios::binary);
+        }
+        if (!file.is_open()) {
+            file.open("../../tests/dummy.pdf", std::ios::binary);
+        }
         ASSERT_TRUE(file.is_open()) << "dummy.pdf not found in test dir";
         std::stringstream buffer;
         buffer << file.rdbuf();

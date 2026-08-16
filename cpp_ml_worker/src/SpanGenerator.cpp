@@ -1,6 +1,7 @@
 #include "SpanGenerator.h"
 #include <algorithm>
 #include <stdexcept>
+#include <ranges>
 
 namespace doc_processor {
 
@@ -14,19 +15,29 @@ GeneratedSpans SpanGenerator::Generate(size_t num_words, size_t max_span_len) {
 
     size_t est_spans = num_words * max_span_len; 
     GeneratedSpans result;
-    result.span_idx.reserve(est_spans * 2);
-    result.span_mask.reserve(est_spans);
-    result.num_spans = 0;
+    result.span_idx_storage.resize(est_spans * 2);
+    result.span_mask_storage.resize(est_spans);
+    result.num_spans = est_spans; // Temporary for mut view to work
 
-    for (size_t start = 0; start < num_words; ++start) {
+    auto span_idx_view = result.span_idx_mut();
+    auto span_mask_view = result.span_mask_mut();
+
+    size_t idx = 0;
+    
+    // Using C++23 ranges
+    for (size_t start : std::views::iota(0uz, num_words)) {
         size_t limit = std::min(num_words, start + max_span_len);
-        for (size_t end = start; end < limit; ++end) {
-            result.span_idx.push_back(static_cast<int64_t>(start));
-            result.span_idx.push_back(static_cast<int64_t>(end));
-            result.span_mask.push_back(1);
-            result.num_spans++;
+        for (size_t end : std::views::iota(start, limit)) {
+            span_idx_view[idx, 0] = static_cast<int64_t>(start);
+            span_idx_view[idx, 1] = static_cast<int64_t>(end);
+            span_mask_view[idx] = 1;
+            idx++;
         }
     }
+
+    result.num_spans = idx;
+    result.span_idx_storage.resize(idx * 2);
+    result.span_mask_storage.resize(idx);
 
     return result;
 }

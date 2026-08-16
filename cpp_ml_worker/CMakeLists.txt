@@ -86,7 +86,7 @@ target_link_libraries(worker_lib PUBLIC
 add_executable(cpp_ml_worker src/main.cpp)
 target_link_libraries(cpp_ml_worker PRIVATE worker_lib)
 
-add_executable(test_local src/test_local.cpp)
+add_executable(test_local tests/test_local.cpp)
 target_link_libraries(test_local PRIVATE worker_lib)
 
 add_executable(print_onnx src/print_onnx.cpp)

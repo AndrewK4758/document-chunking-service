@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <onnxruntime/onnxruntime_cxx_api.h>
+#include <ranges>
 #include "tokenizers_cpp/tokenizers_cpp.h"
 #include "SpanGenerator.h"
 
@@ -149,38 +150,42 @@ namespace {
 
             std::vector<int64_t> span_idx_shape = {1, static_cast<int64_t>(spans.num_spans), 2};
             input_tensors.push_back(Ort::Value::CreateTensor<int64_t>(
-                memory_info, spans.span_idx.data(), spans.span_idx.size(), span_idx_shape.data(), span_idx_shape.size()));
+                memory_info, spans.span_idx_storage.data(), spans.span_idx_storage.size(), span_idx_shape.data(), span_idx_shape.size()));
 
             std::vector<int64_t> span_mask_shape = {1, static_cast<int64_t>(spans.num_spans)};
             input_tensors.push_back(Ort::Value::CreateTensor<int64_t>(
-                memory_info, spans.span_mask.data(), spans.span_mask.size(), span_mask_shape.data(), span_mask_shape.size()));
+                memory_info, spans.span_mask_storage.data(), spans.span_mask_storage.size(), span_mask_shape.data(), span_mask_shape.size()));
 
             const char* input_names[] = {"input_ids", "attention_mask", "words_mask", "text_lengths", "span_idx", "span_mask"};
             const char* output_names[] = {"logits"};
 
             auto output_tensors = session_->Run(Ort::RunOptions{nullptr}, input_names, input_tensors.data(), 6, output_names, 1);
 
-            const auto* logits = output_tensors[0].GetTensorMutableData<float>();
+            const auto* logits_raw = output_tensors[0].GetTensorMutableData<float>();
             auto type_info = output_tensors[0].GetTensorTypeAndShapeInfo();
             auto out_shape = type_info.GetShape(); // Usually [1, num_spans, num_classes]
             size_t num_classes = (out_shape.size() == 3) ? out_shape[2] : 1;
+            size_t expected_spans = (out_shape.size() >= 2) ? out_shape[1] : spans.num_spans;
+
+            auto logits_md = std::mdspan<const float, std::extents<size_t, std::dynamic_extent, std::dynamic_extent>>(
+                logits_raw, expected_spans, num_classes
+            );
 
             std::vector<int> tags(tokens.size(), 0);
+            auto span_idx_view = spans.span_idx();
             
-            for (size_t i = 0; i < spans.num_spans; ++i) {
-                // If it's multi-class, we check if any class > threshold (or specific class)
-                // We'll check the first class or max class over 0.5f for simplicity
+            for (size_t i : std::views::iota(0uz, spans.num_spans)) {
                 float max_score = -1.0f;
-                for (size_t c = 0; c < num_classes; ++c) {
-                    float score = logits[i * num_classes + c];
+                for (size_t c : std::views::iota(0uz, num_classes)) {
+                    float score = logits_md[i, c];
                     if (score > max_score) {
                         max_score = score;
                     }
                 }
 
-                if (max_score > 0.0f) { // Sigmoid > 0.5 means logit > 0.0
-                    int64_t start = spans.span_idx[i * 2];
-                    int64_t end = spans.span_idx[i * 2 + 1];
+                if (max_score > 0.0f) { 
+                    int64_t start = span_idx_view[i, 0];
+                    int64_t end = span_idx_view[i, 1];
                     for (int64_t t = start; t <= end && t < static_cast<int64_t>(tags.size()); ++t) {
                         tags[t] = 1;
                     }

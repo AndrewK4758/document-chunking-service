@@ -17,16 +17,17 @@ TEST(SpanGeneratorTest, TestStandardSequence) {
     // sum(11, 10, ..., 1) = 11 * 12 / 2 = 66
     // Total = 108 + 66 = 174
     EXPECT_EQ(spans.num_spans, 174);
-    EXPECT_EQ(spans.span_idx.size(), 174 * 2);
-    EXPECT_EQ(spans.span_mask.size(), 174);
+    EXPECT_EQ(spans.span_idx_storage.size(), 174 * 2);
+    EXPECT_EQ(spans.span_mask_storage.size(), 174);
     
+    auto span_idx = spans.span_idx();
     // Check first span
-    EXPECT_EQ(spans.span_idx[0], 0);
-    EXPECT_EQ(spans.span_idx[1], 0);
+    EXPECT_EQ((span_idx[0, 0]), 0);
+    EXPECT_EQ((span_idx[0, 1]), 0);
     
     // Check second span
-    EXPECT_EQ(spans.span_idx[2], 0);
-    EXPECT_EQ(spans.span_idx[3], 1);
+    EXPECT_EQ((span_idx[1, 0]), 0);
+    EXPECT_EQ((span_idx[1, 1]), 1);
 }
 
 TEST(SpanGeneratorTest, TestShortSequence) {
@@ -40,12 +41,13 @@ TEST(SpanGeneratorTest, TestShortSequence) {
     // start 1: end 1..4 (4 spans)
     // Total = 5+4+3+2+1 = 15
     EXPECT_EQ(spans.num_spans, 15);
-    EXPECT_EQ(spans.span_idx.size(), 30);
-    EXPECT_EQ(spans.span_mask.size(), 15);
+    EXPECT_EQ(spans.span_idx_storage.size(), 30);
+    EXPECT_EQ(spans.span_mask_storage.size(), 15);
     
     // All masks should be 1
-    for (int64_t mask : spans.span_mask) {
-        EXPECT_EQ(mask, 1);
+    auto span_mask = spans.span_mask();
+    for (size_t i = 0; i < spans.num_spans; ++i) {
+        EXPECT_EQ(span_mask[i], 1);
     }
 }
 

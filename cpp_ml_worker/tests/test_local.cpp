@@ -4,8 +4,8 @@
 #include <memory>
 #include <vector>
 
-#include "MuPDFWrapper.h"
-#include "MLInferenceEngine.h"
+#include "../src/MuPDFWrapper.h"
+#include "../src/MLInferenceEngine.h"
 
 int main(int argc, char** argv) {
     if (argc < 2) {
