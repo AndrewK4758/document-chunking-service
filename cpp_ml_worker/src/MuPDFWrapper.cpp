@@ -79,7 +79,7 @@ void MuPDFWrapper::ApplyRedactions(int page_index, const std::vector<fz_rect>& b
         }
 
         if (pdf_page* ppage = pdf_page_from_fz_page(ctx_, page)) {
-            float red_color[3] = {1.0f, 0.0f, 0.0f};
+            constexpr float red_color[3] = {1.0f, 0.0f, 0.0f};
             for (const auto& rect : bboxes) {
                 pdf_annot* annot = pdf_create_annot(ctx_, ppage, PDF_ANNOT_REDACT);
                 pdf_set_annot_rect(ctx_, annot, rect);

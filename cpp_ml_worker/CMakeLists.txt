@@ -64,6 +64,7 @@ add_library(worker_lib
     src/StorageGatewayClient.cpp
     src/MLInferenceEngine.cpp
     src/MuPDFWrapper.cpp
+    src/SpanGenerator.cpp
     ${PROTO_SRCS} ${GRPC_SRCS}
 )
 
@@ -84,6 +85,13 @@ target_link_libraries(worker_lib PUBLIC
 
 add_executable(cpp_ml_worker src/main.cpp)
 target_link_libraries(cpp_ml_worker PRIVATE worker_lib)
+
+add_executable(test_local src/test_local.cpp)
+target_link_libraries(test_local PRIVATE worker_lib)
+
+add_executable(print_onnx src/print_onnx.cpp)
+target_include_directories(print_onnx PRIVATE ${onnxruntime_SOURCE_DIR}/include)
+target_link_libraries(print_onnx PRIVATE onnxruntime)
 
 enable_testing()
 add_subdirectory(tests)
