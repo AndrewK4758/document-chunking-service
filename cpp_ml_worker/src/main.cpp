@@ -21,7 +21,7 @@ using ml::worker::v1::CppMlWorkerService;
 using ml::worker::v1::RedactDocumentRequest;
 using ml::worker::v1::RedactDocumentResponse;
 
-void load_env_file(const std::string& path) {
+static void load_env_file(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) return;
     std::string line;
@@ -57,14 +57,14 @@ namespace {
                     throw std::runtime_error("Missing identity in request");
                 }
 
-                std::string pdf_data = storage_client_->Download(request->document_uri(), request->identity());
+                const std::string pdf_data = storage_client_->Download(request->document_uri(), request->identity());
 
-                MuPDFWrapper mupdf(pdf_data);
-                int page_count = mupdf.GetPageCount();
+                const MuPDFWrapper mupdf(pdf_data);
+                const int page_count = mupdf.GetPageCount();
 
                 for (int i = 0; i < page_count; i++) {
-                    PageTextData ptd = mupdf.ExtractPageText(i);
-                    std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(ptd.text, ptd.char_bboxes);
+                    auto [text, char_bboxes] = mupdf.ExtractPageText(i);
+                    std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(text, char_bboxes);
                     mupdf.ApplyRedactions(i, bboxes);
                 }
 
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
 
-    std::unique_ptr<Server> server(builder.BuildAndStart());
+    const std::unique_ptr server(builder.BuildAndStart());
     std::cout << "Server listening on " << server_address << std::endl;
 
     server->Wait();
