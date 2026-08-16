@@ -99,37 +99,32 @@ func (s *DocumentProcessingServer) ProcessDocument(ctx context.Context, req *pb.
 
 	_ = g.Wait()
 
-	logFile := filepath.Join("..", "..", "logs", "benchmark.log")
-	if os.Getenv("PROJECT_ROOT") != "" {
-		logFile = filepath.Join(os.Getenv("PROJECT_ROOT"), "logs", "benchmark.log")
-	} else {
-		absPath, err := filepath.Abs("../../logs/benchmark.log")
-		if err == nil {
-			logFile = absPath
-		}
+	projectRoot := os.Getenv("PROJECT_ROOT")
+	if projectRoot == "" {
+		panic(fmt.Errorf("action failed for job ProcessDocument: missing required PROJECT_ROOT environment variable for benchmark logging"))
 	}
+	logFile := filepath.Join(projectRoot, "logs", "benchmark.log")
 	
-	// Create logs directory if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(logFile), 0755); err != nil {
-		logger.Error("DocProcessor", "Failed to create logs directory: %v", err)
+		panic(fmt.Errorf("action failed for job ProcessDocument: failed to create logs directory: %w", err))
 	}
 
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		logLine := fmt.Sprintf("[%s] JobId: %s, AppId: %s, CppSuccess: %v, CppTime: %s, NetSuccess: %v, NetTime: %s\n",
-			time.Now().Format(time.RFC3339),
-			req.Identity.GetJobId(),
-			req.Identity.GetAppId(),
-			cppSuccess,
-			cppDuration,
-			netSuccess,
-			netDuration,
-		)
-		f.WriteString(logLine)
-		f.Close()
-	} else {
-		logger.Error("DocProcessor", "Failed to write to benchmark log file: %v", err)
+	if err != nil {
+		panic(fmt.Errorf("action failed for job ProcessDocument: failed to write to benchmark log file: %w", err))
 	}
+	
+	logLine := fmt.Sprintf("[%s] JobId: %s, AppId: %s, CppSuccess: %v, CppTime: %s, NetSuccess: %v, NetTime: %s\n",
+		time.Now().Format(time.RFC3339),
+		req.Identity.GetJobId(),
+		req.Identity.GetAppId(),
+		cppSuccess,
+		cppDuration,
+		netSuccess,
+		netDuration,
+	)
+	f.WriteString(logLine)
+	f.Close()
 
 	success := cppSuccess || netSuccess
 	var errMsgs []string
