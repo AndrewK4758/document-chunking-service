@@ -22,11 +22,10 @@ using ml::worker::v1::CppMlWorkerService;
 using ml::worker::v1::RedactDocumentRequest;
 using ml::worker::v1::RedactDocumentResponse;
 
-static void load_env_file(const std::string& path) {
+static bool load_env_file(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
-        spdlog::warn("Failed to open environment file: {}", path);
-        return;
+        return false;
     }
     std::string line;
     while (std::getline(file, line)) {
@@ -37,6 +36,7 @@ static void load_env_file(const std::string& path) {
             setenv(key.c_str(), value.c_str(), 0);
         }
     }
+    return true;
 }
 
 #include <csignal>
@@ -124,7 +124,10 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, SignalHandler);
     std::signal(SIGTERM, SignalHandler);
 
-    load_env_file(".env");
+    if (!load_env_file(".env") && !load_env_file("../.env")) {
+        spdlog::warn("Failed to open environment file (.env or ../.env)");
+    }
+    
     spdlog::set_level(spdlog::level::info);
     spdlog::info("Starting C++ ML Worker...");
 
