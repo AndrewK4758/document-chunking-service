@@ -44,10 +44,12 @@ type NatsServer struct {
 }
 
 func NewNatsServer(nc *nats.Conn, js jetstream.JetStream, aiClient pb.DocumentProcessorClient, store storage.Manager, cppMlClient pb.CppMlWorkerServiceClient, dotnetMlClient pb.MlWorkerServiceClient, db *gorm.DB) *NatsServer {
+	chunker := processor.NewChunkingProcessor(aiClient, store)
+	chunker.SetCppMlClient(cppMlClient)
 	return &NatsServer{
 		nc:             nc,
 		js:             js,
-		chunker:        processor.NewChunkingProcessor(aiClient, store),
+		chunker:        chunker,
 		cppMlClient:    cppMlClient,
 		dotnetMlClient: dotnetMlClient,
 		db:             db,

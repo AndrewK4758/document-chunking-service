@@ -40,8 +40,9 @@ type BoundaryDetectionResponse struct {
 }
 
 type ChunkingProcessor struct {
-	AiClient pb.DocumentProcessorClient
-	Store    storage.Manager
+	AiClient    pb.DocumentProcessorClient
+	Store       storage.Manager
+	CppMlClient pb.CppMlWorkerServiceClient
 }
 
 func NewChunkingProcessor(aiClient pb.DocumentProcessorClient, store storage.Manager) *ChunkingProcessor {
@@ -49,6 +50,10 @@ func NewChunkingProcessor(aiClient pb.DocumentProcessorClient, store storage.Man
 		AiClient: aiClient,
 		Store:    store,
 	}
+}
+
+func (p *ChunkingProcessor) SetCppMlClient(client pb.CppMlWorkerServiceClient) {
+	p.CppMlClient = client
 }
 
 func cleanupDir(path string, addTrace func(string, string)) {
@@ -565,6 +570,31 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 		}
 		if isScanned {
 			addTrace(fmt.Sprintf("%s appears to be a scanned document. Routing to OCR Vision LLM.", filepath.Base(pdfPath)), "INFO")
+		}
+
+		if pageCount > maxPagesBeforeSplit && p.CppMlClient != nil {
+			addTrace(fmt.Sprintf("%s is large (%d pages). Routing to CPP ML Worker autonomously for heavy lifting.", filepath.Base(pdfPath), pageCount), "INFO")
+			mlReq := &pb.RedactDocumentRequest{
+				Identity:    req.GetIdentity(),
+				DocumentUri: docUri,
+			}
+			resp, mlErr := p.CppMlClient.RedactDocument(ctx, mlReq)
+			if mlErr != nil {
+				addTrace(fmt.Sprintf("Failed to process document with CPP ML Worker: %v", mlErr), "ERROR")
+				return nil, traceEvents, fmt.Errorf("[Step: ML_WORKER, URI: %s] failed to execute RedactDocument RPC: %w", docUri, mlErr)
+			}
+			if !resp.GetSuccess() {
+				addTrace(fmt.Sprintf("CPP ML Worker failed: %s", resp.GetErrorMessage()), "ERROR")
+				return nil, traceEvents, fmt.Errorf("[Step: ML_WORKER, URI: %s] CPP ML Worker returned failure: %s", docUri, resp.GetErrorMessage())
+			}
+
+			processedDocs = append(processedDocs, &pb.ProcessedDocument{
+				DocumentType:     "ML_PROCESSED",
+				RelativeFilePath: "redacted_" + docUri,
+				PageCount:        int32(pageCount),
+				IsScanned:        isScanned,
+			})
+			continue
 		}
 
 		docs, docErr := p.processDoc(ctx, req, pdfPath, pageCount, maxPagesBeforeSplit, extractDir, docUri, payload, modelChoice, isScanned, addTrace)

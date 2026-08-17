@@ -29,8 +29,10 @@ type DocumentProcessingServer struct {
 }
 
 func NewDocumentProcessingServer(aiClient pb.DocumentProcessorClient, cppMlWorker pb.CppMlWorkerServiceClient, netMlWorker pb.MlWorkerServiceClient, store storage.Manager) *DocumentProcessingServer {
+	chunker := processor.NewChunkingProcessor(aiClient, store)
+	chunker.SetCppMlClient(cppMlWorker)
 	return &DocumentProcessingServer{
-		chunker:      processor.NewChunkingProcessor(aiClient, store),
+		chunker:      chunker,
 		cppMlWorker:  cppMlWorker,
 		netMlWorker:  netMlWorker,
 		store:        store,
