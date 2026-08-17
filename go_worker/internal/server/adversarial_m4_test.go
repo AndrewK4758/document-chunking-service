@@ -90,7 +90,7 @@ func TestAdversarial_GRPC_StreamSendError(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_send_err"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_send_err"},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload,
 		},
 	}

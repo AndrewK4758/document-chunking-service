@@ -18,7 +18,7 @@ func TestEmpirical_NatsWorker_EdgeCases(t *testing.T) {
 		req := &pb.ExecuteTaskRequest{
 			StepId:      "step-1",
 			Identity:    &pb.InfrastructureIdentity{},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     &structpb.Struct{},
 		}
 		b, _ := proto.Marshal(req)
@@ -36,7 +36,7 @@ func TestEmpirical_NatsWorker_EdgeCases(t *testing.T) {
 				AppId:    "a1",
 				JobId:    "",
 			},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     &structpb.Struct{},
 		}
 		b, _ := proto.Marshal(req)
@@ -59,7 +59,7 @@ func TestEmpirical_NatsWorker_EdgeCases(t *testing.T) {
 				AppId:    "a1",
 				JobId:    "j1",
 			},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload,
 		}
 		b, _ := proto.Marshal(req)
@@ -82,7 +82,7 @@ func TestEmpirical_NatsWorker_EdgeCases(t *testing.T) {
 				AppId:    "a1",
 				JobId:    "j1",
 			},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload,
 		}
 		b, _ := proto.Marshal(req)

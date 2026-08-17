@@ -101,7 +101,7 @@ func TestProcessMessage_MissingUri_ErrorContractEnriched(t *testing.T) {
 			AppId:    "a1",
 			JobId:    "j1",
 		},
-		TaskSubject: "worker.doc.process",
+		TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 		Payload:     payload,
 	}
 	b, err := proto.Marshal(req)

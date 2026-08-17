@@ -111,7 +111,7 @@ func TestChallenger_ParallelProcessZipFileAndGoroutineLeak(t *testing.T) {
 			AppId:    "a1",
 			JobId:    "job-parallel",
 		},
-		TaskSubject: "worker.doc.process",
+		TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 		Payload:     payload,
 	}
 
@@ -201,7 +201,7 @@ func TestChallenger_TempFileCleanupIsolation(t *testing.T) {
 			AppId:    "a1",
 			JobId:    "job-cleanup",
 		},
-		TaskSubject: "worker.doc.process",
+		TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 		Payload:     cleanupPayload,
 	}
 

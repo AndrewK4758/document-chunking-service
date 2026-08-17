@@ -87,7 +87,7 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 				Identity:     &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
 				OriginalRequest: &pb.ExecuteTaskRequest{
 					Identity:    &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
-					TaskSubject: "worker.doc.process",
+					TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 					Payload:     payloadStruct,
 				},
 			})
@@ -124,7 +124,7 @@ func TestAdversarial_ProcessZipFile_ZeroByteRawBytes(t *testing.T) {
 		Identity:     &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload,
 		},
 	})
@@ -157,7 +157,7 @@ func TestAdversarial_ProcessZipFile_ContextDoneEarly(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j1"},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload,
 		},
 	})

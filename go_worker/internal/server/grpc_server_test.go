@@ -92,7 +92,7 @@ func TestChunkDocument_Success(t *testing.T) {
 		RawFileBytes: zipBytes,
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_123"},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload1,
 		},
 	}
@@ -132,7 +132,7 @@ func TestChunkDocument_Failure(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_bad"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_bad"},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload2,
 		},
 	}
@@ -169,7 +169,7 @@ func TestChunkDocument_EmptyRequest(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_empty"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "job_empty"},
-			TaskSubject: "worker.doc.process",
+			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
 			Payload:     payload3,
 		},
 	}

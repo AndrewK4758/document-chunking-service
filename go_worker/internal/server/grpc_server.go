@@ -169,7 +169,7 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 		}
 
 		identityparser.NewIdentityParser(req.GetIdentity()).MustValidate(true, "ChunkDocument")
-		if req.GetOriginalRequest() != nil && req.GetOriginalRequest().GetTaskSubject() == "" {
+		if req.GetOriginalRequest() != nil && req.GetOriginalRequest().GetTaskSubject() == pb.WorkerSubject_WORKER_SUBJECT_UNSPECIFIED {
 			panic(fmt.Errorf("action failed for job ChunkDocument: missing required TaskSubject in OriginalRequest"))
 		}
 

@@ -73,7 +73,7 @@ func TestProcessMessage_DualMLRequest(t *testing.T) {
 			AppId:    "a1",
 			JobId:    "j1",
 		},
-		TaskSubject: "WORKER.DOCUMENT_PROCESSING.DUAL_ML",
+		TaskSubject: pb.WorkerSubject_WORKER_DOC_PROCESSING_DUAL_ML,
 		Payload:     payload,
 	}
 	b, err := proto.Marshal(req)

@@ -333,7 +333,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 
 	identityparser.NewIdentityParser(req.GetIdentity()).MustValidate(true, "DocProcessorWorker")
 
-	if req.GetTaskSubject() == "" {
+	if req.GetTaskSubject() == pb.WorkerSubject_WORKER_SUBJECT_UNSPECIFIED {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: missing required TaskSubject"))
 	}
 
@@ -370,7 +370,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: missing payload"))
 	}
 
-	logger.Info("DocProcessor", "DEQUEUED Input Payload for TaskSubject: %s", req.GetTaskSubject())
+	logger.Info("DocProcessor", "DEQUEUED Input Payload for TaskSubject: %v", req.GetTaskSubject())
 
 	parser := workflowparser.NewTaskRequestParser(&req)
 	parser.MustValidateRootPayloadStrict(identity.GetJobId())
@@ -381,15 +381,15 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	var structResult *structpb.Struct
 	var processErr error
 
-	if req.GetTaskSubject() == "worker.doc.inspect" {
+	if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_INSPECT {
 		structResult, processErr = s.chunker.InspectDocument(ctx, &req, executeTaskPayload.Storage.DocumentUri, func(msg string, level string) {
 			logger.Info("DocProcessor", "[%s] %s", level, msg)
 		})
-	} else if req.GetTaskSubject() == "WORKER.DOCUMENT_PROCESSING.CPP_ML" {
+	} else if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_PROCESSING_CPP_ML {
 		structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
-	} else if req.GetTaskSubject() == "WORKER.DOCUMENT_PROCESSING.DOTNET_ML" {
+	} else if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_PROCESSING_DOTNET_ML {
 		structResult, processErr = s.handleDotnetMLRequest(ctx, &req, executeTaskPayload, identity)
-	} else if req.GetTaskSubject() == "WORKER.DOCUMENT_PROCESSING.DUAL_ML" {
+	} else if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_PROCESSING_DUAL_ML {
 		structResult, processErr = s.handleDualMLRequest(ctx, &req, executeTaskPayload, identity)
 	} else {
 		chunkReq := &pb.ChunkDocumentRequest{
