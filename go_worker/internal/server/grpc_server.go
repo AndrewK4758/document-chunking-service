@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"document_processing_service/internal/processor"
@@ -171,7 +172,7 @@ func (s *DocumentProcessingServer) ChunkDocument(stream pb.DocumentProcessingSer
 		}
 
 		identityparser.NewIdentityParser(req.GetIdentity()).MustValidate(true, "ChunkDocument")
-		if req.GetOriginalRequest() != nil && req.GetOriginalRequest().GetTaskSubject() == pb.WorkerSubject_WORKER_SUBJECT_UNSPECIFIED {
+		if req.GetOriginalRequest() != nil && strings.TrimSpace(req.GetOriginalRequest().GetTaskSubject()) == "" {
 			panic(fmt.Errorf("action failed for job ChunkDocument: missing required TaskSubject in OriginalRequest"))
 		}
 

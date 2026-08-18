@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -335,7 +336,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 
 	identityparser.NewIdentityParser(req.GetIdentity()).MustValidate(true, "DocProcessorWorker")
 
-	if req.GetTaskSubject() == pb.WorkerSubject_WORKER_SUBJECT_UNSPECIFIED {
+	if strings.TrimSpace(req.GetTaskSubject()) == "" {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: missing required TaskSubject"))
 	}
 
@@ -384,15 +385,15 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	var processErr error
 
 	switch req.GetTaskSubject() {
-	case pb.WorkerSubject_WORKER_DOC_INSPECT:
+	case "worker.doc.inspect":
 		structResult, processErr = s.chunker.InspectDocument(ctx, &req, executeTaskPayload.Storage.DocumentUri, func(msg string, level string) {
 			logger.Info("DocProcessor", "[%s] %s", level, msg)
 		})
-	case pb.WorkerSubject_WORKER_DOC_PROCESSING_CPP_ML:
+	case "worker.doc.processing.cpp_ml":
 		structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
-	case pb.WorkerSubject_WORKER_DOC_PROCESSING_DOTNET_ML:
+	case "worker.doc.processing.dotnet_ml":
 		structResult, processErr = s.handleDotnetMLRequest(ctx, &req, executeTaskPayload, identity)
-	case pb.WorkerSubject_WORKER_DOC_PROCESSING_DUAL_ML:
+	case "worker.doc.processing.dual_ml":
 		structResult, processErr = s.handleDualMLRequest(ctx, &req, executeTaskPayload, identity)
 	default:
 		// Autonomous Routing Logic: Evaluate complexity
@@ -409,7 +410,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 
 		logger.Info("DocProcessor", "Document is simple (PageCount: %d). Forwarding to AI Inference (JobID: %s)", pageCount, identity.GetJobId())
 		
-		req.TaskSubject = pb.WorkerSubject_WORKER_AI_INFERENCE
+		req.TaskSubject = "worker.ai.inference"
 		forwardData, marshalErr := proto.Marshal(&req)
 		if marshalErr != nil {
 			processErr = fmt.Errorf("failed to marshal forwarded request: %w", marshalErr)
@@ -423,7 +424,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		headers.Set("Reply-Subject", replySubj)
 		
 		pubMsg := &nats.Msg{
-			Subject: req.TaskSubject.String(),
+			Subject: req.TaskSubject,
 			Header:  headers,
 			Data:    forwardData,
 		}
