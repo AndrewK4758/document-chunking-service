@@ -383,28 +383,59 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	var structResult *structpb.Struct
 	var processErr error
 
-	if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_INSPECT {
+	switch req.GetTaskSubject() {
+	case pb.WorkerSubject_WORKER_DOC_INSPECT:
 		structResult, processErr = s.chunker.InspectDocument(ctx, &req, executeTaskPayload.Storage.DocumentUri, func(msg string, level string) {
 			logger.Info("DocProcessor", "[%s] %s", level, msg)
 		})
-	} else if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_PROCESSING_CPP_ML {
+	case pb.WorkerSubject_WORKER_DOC_PROCESSING_CPP_ML:
 		structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
-	} else if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_PROCESSING_DOTNET_ML {
+	case pb.WorkerSubject_WORKER_DOC_PROCESSING_DOTNET_ML:
 		structResult, processErr = s.handleDotnetMLRequest(ctx, &req, executeTaskPayload, identity)
-	} else if req.GetTaskSubject() == pb.WorkerSubject_WORKER_DOC_PROCESSING_DUAL_ML {
+	case pb.WorkerSubject_WORKER_DOC_PROCESSING_DUAL_ML:
 		structResult, processErr = s.handleDualMLRequest(ctx, &req, executeTaskPayload, identity)
-	} else {
-		chunkReq := &pb.ChunkDocumentRequest{
-			Identity:        req.GetIdentity(),
-			StepId:          req.GetStepId(),
-			OriginalRequest: &req,
+	default:
+		// Autonomous Routing Logic: Evaluate complexity
+		pageCount := int32(0)
+		if executeTaskPayload.Storage != nil {
+			pageCount = executeTaskPayload.Storage.PageCount
 		}
-		docs, _, err := s.chunker.ProcessZipFile(ctx, chunkReq)
-		processErr = err
-		if err == nil {
-			logger.Info("DocProcessor", "Successfully processed document for JobID %s, extracted %d chunks", identity.GetJobId(), len(docs))
-			structResult, processErr = buildDocsStructResult(docs)
+
+		if true { // TEMPORARY: Force all to ML service for testing
+			logger.Info("DocProcessor", "Document is complex (PageCount: %d). Routing to CPP ML Worker (JobID: %s)", pageCount, identity.GetJobId())
+			structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
+			break
 		}
+
+		logger.Info("DocProcessor", "Document is simple (PageCount: %d). Forwarding to AI Inference (JobID: %s)", pageCount, identity.GetJobId())
+		
+		req.TaskSubject = pb.WorkerSubject_WORKER_AI_INFERENCE
+		forwardData, marshalErr := proto.Marshal(&req)
+		if marshalErr != nil {
+			processErr = fmt.Errorf("failed to marshal forwarded request: %w", marshalErr)
+			break
+		}
+
+		headers := msg.Headers()
+		if headers == nil {
+			headers = nats.Header{}
+		}
+		headers.Set("Reply-Subject", replySubj)
+		
+		pubMsg := &nats.Msg{
+			Subject: req.TaskSubject.String(),
+			Header:  headers,
+			Data:    forwardData,
+		}
+		
+		if _, pubErr := s.js.PublishMsg(ctx, pubMsg); pubErr != nil {
+			processErr = fmt.Errorf("failed to forward to AI Inference: %w", pubErr)
+			break
+		}
+		
+		// Successfully forwarded, ack and exit since the AI worker will reply to the orchestrator.
+		s.ackMessage(msg, startTime, identity, attempt)
+		return
 	}
 
 	if processErr != nil {

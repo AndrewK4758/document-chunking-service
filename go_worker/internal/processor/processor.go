@@ -572,8 +572,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			addTrace(fmt.Sprintf("%s appears to be a scanned document. Routing to OCR Vision LLM.", filepath.Base(pdfPath)), "INFO")
 		}
 
-		if pageCount > maxPagesBeforeSplit && p.CppMlClient != nil {
-			addTrace(fmt.Sprintf("%s is large (%d pages). Routing to CPP ML Worker autonomously for heavy lifting.", filepath.Base(pdfPath), pageCount), "INFO")
+		if p.CppMlClient != nil {
+			addTrace(fmt.Sprintf("%s is being routed to CPP ML Worker autonomously for testing.", filepath.Base(pdfPath)), "INFO")
 			mlReq := &pb.RedactDocumentRequest{
 				Identity:    req.GetIdentity(),
 				DocumentUri: docUri,
