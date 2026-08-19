@@ -81,6 +81,7 @@ add_library(worker_lib
     src/MLInferenceEngine.cpp
     src/MuPDFWrapper.cpp
     src/SpanGenerator.cpp
+    src/SpatialLayoutAnalyzer.cpp
     ${PROTO_SRCS} ${GRPC_SRCS}
 )
 
@@ -123,7 +124,7 @@ enable_testing()
 find_package(GTest REQUIRED)
 include(GoogleTest)
 
-add_executable(cpp_ml_worker_test tests/test_main.cpp tests/test_span_generator.cpp)
+add_executable(cpp_ml_worker_test tests/test_main.cpp tests/test_span_generator.cpp tests/test_spatial_layout_analyzer.cpp)
 target_include_directories(cpp_ml_worker_test PRIVATE src)
 target_link_libraries(cpp_ml_worker_test PRIVATE worker_lib GTest::gtest_main)
 set_target_properties(cpp_ml_worker_test PROPERTIES

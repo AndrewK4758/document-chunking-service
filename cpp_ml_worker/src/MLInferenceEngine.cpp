@@ -2,6 +2,11 @@
 #include <stdexcept>
 #include <fstream>
 #include <sstream>
+#include <cmath>
+#include <cstdlib>
+#include <algorithm>
+#include <map>
+#include <tuple>
 #include <onnxruntime_cxx_api.h>
 #include <ranges>
 #include "tokenizers_cpp/tokenizers_cpp.h"
@@ -46,15 +51,53 @@ namespace {
         }
         return out;
     }
+
+    struct CandidateKey {
+        size_t start_word;
+        size_t end_word;
+        std::string label;
+
+        bool operator<(const CandidateKey& other) const {
+            return std::tie(start_word, end_word, label) < std::tie(other.start_word, other.end_word, other.label);
+        }
+    };
 }
 
-std::vector<fz_rect> MLInferenceEngine::CalculateRedactionBBoxes(const std::string& text, const std::vector<fz_rect>& char_bboxes, std::span<const std::string> dynamic_labels) {
+float MLInferenceEngine::ResolveConfidenceThreshold(float threshold_override) {
+    if (threshold_override >= 0.0f && threshold_override <= 1.0f) {
+        return threshold_override;
+    }
+    if (const char* env_val = std::getenv("GLINER_CONFIDENCE_THRESHOLD")) {
+        try {
+            float val = std::stof(env_val);
+            if (val >= 0.0f && val <= 1.0f) {
+                return val;
+            }
+        } catch (...) {}
+    }
+    return 0.50f;
+}
+
+std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtractedSpans(
+    const std::string& text,
+    const std::vector<fz_rect>& char_bboxes,
+    std::span<const std::string> dynamic_labels,
+    int page_number,
+    float page_width,
+    float page_height,
+    float threshold_override
+) {
     if (text.size() != char_bboxes.size()) {
-        throw std::runtime_error("Text length does not match character bounding boxes length");
+        throw std::invalid_argument("Text length does not match character bounding boxes length");
+    }
+    if (page_width <= 0.0f || page_height <= 0.0f) {
+        throw std::invalid_argument("Page dimensions must be positive");
     }
     if (text.empty() || dynamic_labels.empty()) {
         return {};
     }
+
+    float threshold = ResolveConfidenceThreshold(threshold_override);
 
     // 1. Extract words and corresponding bounding boxes
     std::vector<WordSpan> words;
@@ -91,87 +134,169 @@ std::vector<fz_rect> MLInferenceEngine::CalculateRedactionBBoxes(const std::stri
         return {};
     }
 
-    // 2. Build GLiNER prompt sequence: [CLS] <<ENT>> label1 <<ENT>> label2 ... <<SEP>>
-    std::vector<int64_t> input_ids;
-    input_ids.push_back(1); // [CLS]
+    constexpr size_t WINDOW_SIZE = 384;
+    constexpr size_t WINDOW_OVERLAP = 64;
+    constexpr size_t WINDOW_STEP = WINDOW_SIZE - WINDOW_OVERLAP;
 
-    for (const auto& label : dynamic_labels) {
-        input_ids.push_back(128002); // <<ENT>>
-        std::vector<int32_t> l_tokens = tokenizer_->Encode(SanitizeUtf8(label));
-        for (int32_t id : l_tokens) {
-            input_ids.push_back(static_cast<int64_t>(id));
+    std::map<CandidateKey, float> candidate_map;
+
+    size_t num_total_words = words.size();
+    for (size_t window_start = 0; window_start < num_total_words; ) {
+        size_t window_end = std::min(window_start + WINDOW_SIZE, num_total_words);
+        size_t window_word_count = window_end - window_start;
+
+        // Build GLiNER prompt sequence: [CLS] <<ENT>> label1 <<ENT>> label2 ... <<SEP>> word1 word2 ... [SEP]
+        std::vector<int64_t> input_ids;
+        input_ids.push_back(1); // [CLS]
+
+        for (const auto& label : dynamic_labels) {
+            input_ids.push_back(128002); // <<ENT>>
+            std::vector<int32_t> l_tokens = tokenizer_->Encode(SanitizeUtf8(label));
+            for (int32_t t : l_tokens) {
+                input_ids.push_back(t);
+            }
         }
-    }
-    input_ids.push_back(128003); // <<SEP>>
+        input_ids.push_back(128003); // <<SEP>>
 
-    size_t prompt_len = input_ids.size();
-    std::vector<int64_t> words_mask(prompt_len, 0);
+        std::vector<int64_t> words_mask(input_ids.size(), 0);
 
-    // 3. Tokenize words and map into words_mask
-    for (size_t w_idx = 0; w_idx < words.size(); ++w_idx) {
-        std::string safe_word = SanitizeUtf8(words[w_idx].text);
-        std::vector<int32_t> w_subwords = tokenizer_->Encode(safe_word);
-        if (w_subwords.empty()) {
-            w_subwords.push_back(0);
+        for (size_t wi = window_start; wi < window_end; ++wi) {
+            const auto& w = words[wi];
+            std::vector<int32_t> w_tokens = tokenizer_->Encode(SanitizeUtf8(w.text));
+            if (w_tokens.empty()) {
+                input_ids.push_back(0);
+                words_mask.push_back(1);
+            } else {
+                input_ids.push_back(w_tokens[0]);
+                words_mask.push_back(1);
+                for (size_t ti = 1; ti < w_tokens.size(); ++ti) {
+                    input_ids.push_back(w_tokens[ti]);
+                    words_mask.push_back(2);
+                }
+            }
         }
-        for (int32_t id : w_subwords) {
-            input_ids.push_back(static_cast<int64_t>(id));
-            words_mask.push_back(static_cast<int64_t>(w_idx + 1));
-        }
-    }
 
-    input_ids.push_back(2); // [SEP]
-    words_mask.push_back(0);
+        input_ids.push_back(2); // [SEP]
+        words_mask.push_back(0);
 
-    std::vector<int64_t> attention_mask(input_ids.size(), 1);
+        std::vector<int64_t> attention_mask(input_ids.size(), 1);
 
-    // 4. Generate spans
-    size_t num_words = words.size();
-    size_t max_span_len = 12;
-    auto spans = doc_processor::SpanGenerator::Generate(num_words, max_span_len);
+        auto spans = doc_processor::SpanGenerator::Generate(window_word_count, 12);
 
-    // 5. Run ONNX Inference
-    std::vector<float> logits = onnx_runner_->RunInference(
-        input_ids, attention_mask, words_mask, num_words, dynamic_labels.size(), spans
-    );
+        std::vector<float> logits = onnx_runner_->RunInference(
+            input_ids,
+            attention_mask,
+            words_mask,
+            window_word_count,
+            dynamic_labels.size(),
+            spans
+        );
 
-    if (logits.empty()) {
-        return {};
-    }
-
-    // 6. Decode predictions using mdspan
-    auto logits_md = std::mdspan<const float, std::extents<size_t, std::dynamic_extent, std::dynamic_extent, std::dynamic_extent>>(
-        logits.data(), num_words, max_span_len, dynamic_labels.size()
-    );
-
-    std::vector<fz_rect> redaction_bboxes;
-    const float threshold = 0.4f;
-
-    for (size_t w = 0; w < num_words; ++w) {
-        for (size_t span_len = 0; span_len < max_span_len; ++span_len) {
-            size_t end_word = w + span_len;
-            if (end_word < num_words) {
-                for (size_t c = 0; c < dynamic_labels.size(); ++c) {
-                    float logit = logits_md[w, span_len, c];
-                    float prob = 1.0f / (1.0f + std::exp(-logit));
-                    if (prob > threshold) {
-                        fz_rect entity_box = fz_empty_rect;
-                        for (size_t k = w; k <= end_word; ++k) {
-                            if (!fz_is_empty_rect(words[k].bbox)) {
-                                if (fz_is_empty_rect(entity_box)) {
-                                    entity_box = words[k].bbox;
-                                } else {
-                                    entity_box = fz_union_rect(entity_box, words[k].bbox);
+        if (!logits.empty()) {
+            size_t num_classes = dynamic_labels.size();
+            for (size_t k = 0; k < window_word_count; ++k) {
+                for (size_t l = 0; l < 12; ++l) {
+                    if (k + l >= window_word_count) continue;
+                    for (size_t c = 0; c < num_classes; ++c) {
+                        size_t idx = (k * 12 + l) * num_classes + c;
+                        if (idx < logits.size()) {
+                            float logit = logits[idx];
+                            float conf = 1.0f / (1.0f + std::exp(-logit));
+                            if (conf >= threshold) {
+                                CandidateKey key{window_start + k, window_start + k + l, dynamic_labels[c]};
+                                auto it = candidate_map.find(key);
+                                if (it == candidate_map.end() || conf > it->second) {
+                                    candidate_map[key] = conf;
                                 }
                             }
-                        }
-                        if (!fz_is_empty_rect(entity_box)) {
-                            redaction_bboxes.push_back(entity_box);
                         }
                     }
                 }
             }
         }
+
+        if (window_end >= num_total_words) {
+            break;
+        }
+        window_start += (num_total_words > WINDOW_SIZE ? WINDOW_STEP : num_total_words);
+    }
+
+    std::vector<ml::worker::v1::ExtractedSpan> results;
+    results.reserve(candidate_map.size());
+
+    for (const auto& [cand_key, conf] : candidate_map) {
+        fz_rect union_box = fz_empty_rect;
+        for (size_t wi = cand_key.start_word; wi <= cand_key.end_word; ++wi) {
+            if (!fz_is_empty_rect(words[wi].bbox)) {
+                if (fz_is_empty_rect(union_box)) {
+                    union_box = words[wi].bbox;
+                } else {
+                    union_box = fz_union_rect(union_box, words[wi].bbox);
+                }
+            }
+        }
+
+        float rx0 = std::min(union_box.x0, union_box.x1);
+        float rx1 = std::max(union_box.x0, union_box.x1);
+        float ry0 = std::min(union_box.y0, union_box.y1);
+        float ry1 = std::max(union_box.y0, union_box.y1);
+
+        float norm_x0 = std::clamp(rx0 / page_width, 0.0f, 1.0f);
+        float norm_x1 = std::clamp(rx1 / page_width, 0.0f, 1.0f);
+        float norm_y0 = std::clamp(ry0 / page_height, 0.0f, 1.0f);
+        float norm_y1 = std::clamp(ry1 / page_height, 0.0f, 1.0f);
+
+        size_t text_start = words[cand_key.start_word].start_char;
+        size_t text_end = words[cand_key.end_word].end_char;
+        std::string span_text = text.substr(text_start, text_end - text_start);
+
+        ml::worker::v1::ExtractedSpan span;
+        span.set_text(span_text);
+        span.set_x0(norm_x0);
+        span.set_y0(norm_y0);
+        span.set_x1(norm_x1);
+        span.set_y1(norm_y1);
+        span.set_label(cand_key.label);
+        span.set_confidence(conf);
+        span.set_page_number(page_number);
+
+        results.push_back(std::move(span));
+    }
+
+    return results;
+}
+
+std::vector<fz_rect> MLInferenceEngine::CalculateRedactionBBoxes(
+    const std::string& text,
+    const std::vector<fz_rect>& char_bboxes,
+    std::span<const std::string> dynamic_labels
+) {
+    if (text.size() != char_bboxes.size()) {
+        throw std::invalid_argument("Text length does not match character bounding boxes length");
+    }
+    if (text.empty() || dynamic_labels.empty()) {
+        return {};
+    }
+
+    auto extracted_spans = CalculateExtractedSpans(
+        text,
+        char_bboxes,
+        dynamic_labels,
+        1,
+        1000.0f,
+        1000.0f
+    );
+
+    std::vector<fz_rect> redaction_bboxes;
+    redaction_bboxes.reserve(extracted_spans.size());
+
+    for (const auto& span : extracted_spans) {
+        fz_rect rect;
+        rect.x0 = span.x0() * 1000.0f;
+        rect.y0 = span.y0() * 1000.0f;
+        rect.x1 = span.x1() * 1000.0f;
+        rect.y1 = span.y1() * 1000.0f;
+        redaction_bboxes.push_back(rect);
     }
 
     return redaction_bboxes;
@@ -181,15 +306,15 @@ namespace {
     class RealTokenizer : public ITokenizer {
     public:
         explicit RealTokenizer(const std::string& path) {
-            std::ifstream t(path);
-            if (!t.is_open()) {
-                throw std::runtime_error("Failed to open tokenizer.json at " + path);
+            std::ifstream file(path);
+            if (!file.is_open()) {
+                throw std::runtime_error("Failed to open tokenizer json file: " + path);
             }
             std::stringstream buffer;
-            buffer << t.rdbuf();
+            buffer << file.rdbuf();
             tokenizer_ = tokenizers::Tokenizer::FromBlobJSON(buffer.str());
             if (!tokenizer_) {
-                throw std::runtime_error("Failed to parse tokenizer.json");
+                throw std::runtime_error("Failed to create tokenizer from blob json");
             }
         }
 

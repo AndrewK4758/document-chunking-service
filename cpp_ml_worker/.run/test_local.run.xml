@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="test_local" type="CMakeRunConfiguration" factoryName="Application" REDIRECT_INPUT="false" ELEVATE="false" USE_EXTERNAL_CONSOLE="false" EMULATE_TERMINAL="false" WORKING_DIR="file://$PROJECT_DIR$" PASS_PARENT_ENVS_2="true" PROJECT_NAME="cpp_ml_worker" TARGET_NAME="test_local" CONFIG_NAME="Debug" RUN_TARGET_PROJECT_NAME="cpp_ml_worker" RUN_TARGET_NAME="test_local">
+    <envs>
+      <env name="ONNX_MODEL_PATH" value="/home/ak/projects/ml/model.onnx" />
+      <env name="TOKENIZER_PATH" value="/home/ak/projects/ml/tokenizer.json" />
+      <env name="STORAGE_GATEWAY_URI" value="127.0.0.1:11118" />
+    </envs>
+    <method v="2">
+      <option name="com.jetbrains.cidr.execution.CidrBuildBeforeRunTaskProvider$BuildBeforeRunTask" enabled="true" />
+    </method>
+  </configuration>
+</component>

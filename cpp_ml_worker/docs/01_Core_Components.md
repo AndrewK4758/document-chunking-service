@@ -6,7 +6,7 @@ The **C++ ML Worker Service** provides native, hardware-accelerated machine lear
 
 ### 1. `MLInferenceEngine` & ONNX Runtime
 - Loads zero-shot **GLiNER** (Generalist and Lightweight Model for Named Entity Recognition) models in ONNX format.
-- Uses C++23 zero-copy buffers (`std::span`) to feed pre-allocated input tensors into the ONNX Runtime session.
+- Uses C++26 zero-copy buffers (`std::span` and `std::mdspan`) to feed pre-allocated input tensors into the ONNX Runtime session.
 - Runs bidirectional token and span classification to identify arbitrary target entity types (e.g., names, addresses, dates, account numbers) without retraining.
 
 ### 2. `MuPDFWrapper` (Document Parsing & Layout)

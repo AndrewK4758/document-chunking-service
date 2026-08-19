@@ -1,6 +1,6 @@
 # C++ ML Worker Service (cpp_ml_worker)
 
-Welcome to the **C++ ML Worker Service**, a high-performance native C++23/26 microservice within the Document Processing subsystem. It provides ultra-fast zero-shot Named Entity Recognition (NER), entity span extraction, and document redaction using ONNX Runtime and MuPDF.
+Welcome to the **C++ ML Worker Service**, a high-performance native C++26 microservice within the Document Processing subsystem. It provides ultra-fast zero-shot Named Entity Recognition (NER), entity span extraction, and document redaction using ONNX Runtime and MuPDF.
 
 ## Documentation Index
 

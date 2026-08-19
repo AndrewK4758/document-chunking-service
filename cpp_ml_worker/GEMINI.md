@@ -1,4 +1,4 @@
-# C++23/26 Architecture & Agent Rules (cpp_ml_worker)
+# C++26 Architecture & Agent Rules (cpp_ml_worker)
 
 This document is the absolute source of truth for all C++ implementations within the ML Worker service. It extends the Global `GEMINI.md` mandates specifically for the modern C++ ecosystem.
 
@@ -7,12 +7,13 @@ This document is the absolute source of truth for all C++ implementations within
 - **RAII is Absolute**: You must NEVER use naked `new` or `delete`. Every resource (MuPDF contexts, ONNX sessions, file handles) must be managed by smart pointers (`std::unique_ptr`) or custom RAII wrappers. Memory leaks in long-running ML inference loops are catastrophic.
 - **Throw on Construction**: If an object cannot be fully initialized (e.g., `MLInferenceEngine` fails to load the ONNX model from disk), throw an exception in the constructor. Do not rely on `Init()` methods or `IsValid()` checks.
 
-## 🚀 2. Modern C++23 & C++26 Features
+## 🚀 2. Modern C++26 Features & Standard Library
+- **C++26 Baseline**: All compilation targets MUST enforce `CMAKE_CXX_STANDARD 26`. Do not downgrade or use legacy flags.
 - **Ranges and Views**: Prefer `std::ranges` and `std::views` over traditional `for` loops and standard algorithms when transforming or filtering data.
-- **std::expected / std::optional**: For operations that can gracefully fail (and where a crash is not required by the Fail Fast rule), return `std::expected<T, E>` (C++23) or `std::optional<T>` instead of out-parameters or magic return codes.
-- **std::span and std::mdspan**: When passing arrays or buffers (especially ONNX tensors or token arrays), pass by `std::span<T>`. For multi-dimensional tensor data (like GLiNER's `span_idx`), use C++23's `std::mdspan` instead of manual index math (e.g., `buffer[batch * stride + index]`).
-- **std::print and std::println**: Utilize C++23 `<print>` formatting instead of `std::cout` or `std::stringstream` where possible for logging and CLI output.
-- **Deducing This**: Utilize C++23 explicit object parameters (`this auto&& self`) if it simplifies const/non-const method overloading.
+- **std::expected / std::optional**: For operations that can gracefully fail (and where a crash is not required by the Fail Fast rule), return `std::expected<T, E>` or `std::optional<T>` instead of out-parameters or magic return codes.
+- **std::span and std::mdspan**: When passing arrays or buffers (especially ONNX tensors or token arrays), pass by `std::span<T>`. For multi-dimensional tensor data (like GLiNER's `span_idx`), use `std::mdspan` instead of manual index math (e.g., `buffer[batch * stride + index]`).
+- **std::print and std::println**: Utilize `<print>` formatting instead of `std::cout` or `std::stringstream` where possible for logging and CLI output.
+- **Deducing This & Reflection**: Utilize explicit object parameters (`this auto&& self`) and C++26 reflection primitives to simplify const/non-const method overloading and serialization.
 - **constexpr Everything**: If a value or a function can be computed at compile time, mark it `constexpr` or `consteval`.
 
 ## 🧠 3. ML Inference & Memory Management

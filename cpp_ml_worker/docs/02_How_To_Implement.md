@@ -3,7 +3,7 @@
 ## 🚀 Building & Running the C++ ML Worker Service
 
 ### Prerequisites
-- Modern C++23/26 compiler (`clang++-18` or `g++-14`)
+- Modern C++26 compiler (`clang++-20+` or `g++-15+`)
 - CMake 3.28+
 - ONNX Runtime 1.17+
 - MuPDF development libraries

@@ -24,7 +24,7 @@ GeneratedSpans SpanGenerator::Generate(size_t num_words, size_t max_span_len) {
 
     size_t idx = 0;
     
-    // Using C++23 ranges
+    // Using C++26 ranges
     for (size_t start : std::views::iota(0uz, num_words)) {
         for (size_t end_offset : std::views::iota(0uz, max_span_len)) {
             size_t end = start + end_offset;

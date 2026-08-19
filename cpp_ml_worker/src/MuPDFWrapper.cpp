@@ -1,5 +1,7 @@
 #include "MuPDFWrapper.h"
 #include <stdexcept>
+#include <algorithm>
+#include <map>
 
 MuPDFWrapper::MuPDFWrapper(const std::string& pdf_data) {
     ctx_ = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
@@ -15,7 +17,8 @@ MuPDFWrapper::MuPDFWrapper(const std::string& pdf_data) {
     } fz_catch(ctx_) {
         std::string err_msg = fz_caught_message(ctx_);
         fz_drop_context(ctx_);
-        throw std::runtime_error("MuPDF Error: " + err_msg);    }
+        throw std::runtime_error("MuPDF Error: " + err_msg);
+    }
 }
 
 MuPDFWrapper::~MuPDFWrapper() {
@@ -34,6 +37,11 @@ int MuPDFWrapper::GetPageCount() const {
 }
 
 PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
+    int page_count = GetPageCount();
+    if (page_index < 0 || page_index >= page_count) {
+        throw std::out_of_range("page_index out of range");
+    }
+
     PageTextData data;
     fz_try(ctx_) {
         fz_page* page = fz_load_page(ctx_, doc_, page_index);
@@ -66,11 +74,19 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
         fz_drop_page(ctx_, page);
     } fz_catch(ctx_) {
         throw std::runtime_error(std::string("ExtractPageText error: ") + fz_caught_message(ctx_));
-    }    return data;
+    }
+    return data;
 }
 
-void MuPDFWrapper::ApplyRedactions(int page_index, const std::vector<fz_rect>& bboxes) const {
+void MuPDFWrapper::ApplyRedactions(int page_index, const std::vector<fz_rect>& bboxes, const float color[3]) const {
+    int page_count = GetPageCount();
+    if (page_index < 0 || page_index >= page_count) {
+        throw std::out_of_range("page_index out of range for redaction");
+    }
     if (bboxes.empty()) return;
+
+    constexpr float default_black[3] = {0.0f, 0.0f, 0.0f};
+    const float* fill_color = color ? color : default_black;
 
     fz_try(ctx_) {
         fz_page* page = fz_load_page(ctx_, doc_, page_index);
@@ -79,18 +95,93 @@ void MuPDFWrapper::ApplyRedactions(int page_index, const std::vector<fz_rect>& b
         }
 
         if (pdf_page* ppage = pdf_page_from_fz_page(ctx_, page)) {
-            constexpr float red_color[3] = {1.0f, 0.0f, 0.0f};
+            int valid_annots = 0;
             for (const auto& rect : bboxes) {
+                if (fz_is_empty_rect(rect) || rect.x0 >= rect.x1 || rect.y0 >= rect.y1) {
+                    continue;
+                }
                 pdf_annot* annot = pdf_create_annot(ctx_, ppage, PDF_ANNOT_REDACT);
                 pdf_set_annot_rect(ctx_, annot, rect);
-                pdf_set_annot_color(ctx_, annot, 3, red_color);
+                pdf_set_annot_color(ctx_, annot, 3, fill_color);
+                valid_annots++;
             }
-            pdf_redact_page(ctx_, pdf_document_from_fz_document(ctx_, doc_), ppage, nullptr);
+            if (valid_annots > 0) {
+                pdf_redact_page(ctx_, pdf_document_from_fz_document(ctx_, doc_), ppage, nullptr);
+            }
         }
 
         fz_drop_page(ctx_, page);
     } fz_catch(ctx_) {
         throw std::runtime_error(std::string("ApplyRedactions error: ") + fz_caught_message(ctx_));
+    }
+}
+
+void MuPDFWrapper::ApplyNormalizedRedactions(
+    std::span<const ml::worker::v1::NormalizedRedactionBox> custom_boxes,
+    const float color[3]
+) const {
+    if (custom_boxes.empty()) return;
+
+    int total_pages = GetPageCount();
+
+    // Group boxes by page index (1-based page_number maps to 0-based page_index)
+    std::map<int, std::vector<ml::worker::v1::NormalizedRedactionBox>> page_boxes_map;
+    for (const auto& box : custom_boxes) {
+        int page_idx = box.page_number() > 0 ? (box.page_number() - 1) : 0;
+        if (page_idx < 0 || page_idx >= total_pages) {
+            throw std::out_of_range("page_number in NormalizedRedactionBox is out of range");
+        }
+        page_boxes_map[page_idx].push_back(box);
+    }
+
+    constexpr float default_black[3] = {0.0f, 0.0f, 0.0f};
+    const float* fill_color = color ? color : default_black;
+
+    for (const auto& [page_idx, boxes] : page_boxes_map) {
+        fz_try(ctx_) {
+            fz_page* page = fz_load_page(ctx_, doc_, page_idx);
+            if (!page) {
+                fz_throw(ctx_, FZ_ERROR_GENERIC, "Failed to load page for normalized redaction");
+            }
+
+            if (pdf_page* ppage = pdf_page_from_fz_page(ctx_, page)) {
+                fz_rect page_bounds = fz_bound_page(ctx_, page);
+                float page_w = page_bounds.x1 - page_bounds.x0;
+                float page_h = page_bounds.y1 - page_bounds.y0;
+
+                int valid_annots = 0;
+                for (const auto& box : boxes) {
+                    float rx0 = std::min(box.x0(), box.x1());
+                    float rx1 = std::max(box.x0(), box.x1());
+                    float ry0 = std::min(box.y0(), box.y1());
+                    float ry1 = std::max(box.y0(), box.y1());
+
+                    // Skip degenerate or collapsed boxes
+                    if (rx0 >= rx1 || ry0 >= ry1) {
+                        continue;
+                    }
+
+                    fz_rect native_rect;
+                    native_rect.x0 = page_bounds.x0 + std::clamp(rx0, 0.0f, 1.0f) * page_w;
+                    native_rect.x1 = page_bounds.x0 + std::clamp(rx1, 0.0f, 1.0f) * page_w;
+                    native_rect.y0 = page_bounds.y0 + std::clamp(ry0, 0.0f, 1.0f) * page_h;
+                    native_rect.y1 = page_bounds.y0 + std::clamp(ry1, 0.0f, 1.0f) * page_h;
+
+                    pdf_annot* annot = pdf_create_annot(ctx_, ppage, PDF_ANNOT_REDACT);
+                    pdf_set_annot_rect(ctx_, annot, native_rect);
+                    pdf_set_annot_color(ctx_, annot, 3, fill_color);
+                    valid_annots++;
+                }
+
+                if (valid_annots > 0) {
+                    pdf_redact_page(ctx_, pdf_document_from_fz_document(ctx_, doc_), ppage, nullptr);
+                }
+            }
+
+            fz_drop_page(ctx_, page);
+        } fz_catch(ctx_) {
+            throw std::runtime_error(std::string("ApplyNormalizedRedactions error: ") + fz_caught_message(ctx_));
+        }
     }
 }
 
@@ -109,5 +200,6 @@ std::string MuPDFWrapper::GetRedactedPdf() const {
         fz_drop_buffer(ctx_, buf);
     } fz_catch(ctx_) {
         throw std::runtime_error(std::string("GetRedactedPdf error: ") + fz_caught_message(ctx_));
-    }    return redacted_pdf_data;
+    }
+    return redacted_pdf_data;
 }

@@ -2,6 +2,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cstdlib>
+#include <stdckdint.h>
 #include "MLInferenceEngine.h"
 #include "MuPDFWrapper.h"
 
@@ -24,17 +26,10 @@ namespace {
         }
 
         std::string Decode(const std::vector<int32_t>& ids) override {
-            // We know each token spans 5 characters, just return 5 spaces
-            // OR return a known substring for mapping.
-            // For our test, let's just make it return a 5 character long string
             return "12345";
         }
     };
-}
 
-#include "SpanGenerator.h"
-
-namespace {
     class MockOnnxRunner : public IOnnxRunner {
     public:
         std::vector<float> RunInference(
@@ -50,7 +45,7 @@ namespace {
             if (num_words > 1 && num_classes > 0) {
                 size_t idx = (1 * 12 + 0) * num_classes + 0;
                 if (idx < logits.size()) {
-                    logits[idx] = 10.0f;
+                    logits[idx] = 10.0f; // High confidence logit for second word
                 }
             }
             return logits;
@@ -59,7 +54,8 @@ namespace {
 }
 
 TEST(WorkerTests, InitializationTest) {
-    fz_context *ctx = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);    ASSERT_NE(ctx, nullptr);
+    fz_context *ctx = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
+    ASSERT_NE(ctx, nullptr);
     fz_drop_context(ctx);
 }
 
@@ -72,14 +68,13 @@ TEST(WorkerTests, InferenceEngineCalculatesCorrectBBoxes) {
     const std::string text = "12345 12345 12345";
     std::vector<fz_rect> char_bboxes;
     for (int i = 0; i < 17; ++i) {
-        fz_rect r = { static_cast<float>(i)*10, 0, static_cast<float>(i + 1)*10, 10 };        char_bboxes.push_back(r);
+        fz_rect r = { static_cast<float>(i)*10, 0, static_cast<float>(i + 1)*10, 10 };
+        char_bboxes.push_back(r);
     }
 
     std::vector<std::string> labels = {"TestLabel"};
     auto bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes, labels);
     
-    // The second word (indices 6-10) was tagged as PII.
-    // Bbox should cover x from 60 to 110.
     ASSERT_EQ(bboxes.size(), 1);
     EXPECT_FLOAT_EQ(bboxes[0].x0, 60.0f);
     EXPECT_FLOAT_EQ(bboxes[0].y0, 0.0f);
@@ -87,44 +82,202 @@ TEST(WorkerTests, InferenceEngineCalculatesCorrectBBoxes) {
     EXPECT_FLOAT_EQ(bboxes[0].y1, 10.0f);
 }
 
+TEST(WorkerTests, CalculateExtractedSpans_StandardAndNormalized) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto onnx_runner = std::make_unique<MockOnnxRunner>();
+    
+    MLInferenceEngine engine(std::move(tokenizer), std::move(onnx_runner));
+
+    const std::string text = "12345 12345 12345";
+    std::vector<fz_rect> char_bboxes;
+    for (int i = 0; i < 17; ++i) {
+        fz_rect r = { static_cast<float>(i)*10, 0, static_cast<float>(i + 1)*10, 10 };
+        char_bboxes.push_back(r);
+    }
+
+    std::vector<std::string> labels = {"TestLabel"};
+    auto spans = engine.CalculateExtractedSpans(
+        text,
+        char_bboxes,
+        labels,
+        1,
+        1000.0f,
+        500.0f
+    );
+
+    ASSERT_EQ(spans.size(), 1);
+    EXPECT_EQ(spans[0].text(), "12345");
+    EXPECT_EQ(spans[0].label(), "TestLabel");
+    EXPECT_EQ(spans[0].page_number(), 1);
+    EXPECT_GT(spans[0].confidence(), 0.99f);
+    EXPECT_FLOAT_EQ(spans[0].x0(), 60.0f / 1000.0f);
+    EXPECT_FLOAT_EQ(spans[0].x1(), 110.0f / 1000.0f);
+    EXPECT_FLOAT_EQ(spans[0].y0(), 0.0f);
+    EXPECT_FLOAT_EQ(spans[0].y1(), 10.0f / 500.0f);
+}
+
+TEST(WorkerTests, CalculateExtractedSpans_FailFastOnInvalidInput) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto onnx_runner = std::make_unique<MockOnnxRunner>();
+    
+    MLInferenceEngine engine(std::move(tokenizer), std::move(onnx_runner));
+
+    const std::string text = "12345 12345";
+    std::vector<fz_rect> mismatched_bboxes(5, fz_empty_rect);
+    std::vector<std::string> labels = {"TestLabel"};
+
+    EXPECT_THROW(
+        (void)engine.CalculateExtractedSpans(text, mismatched_bboxes, labels, 1, 1000.0f, 1000.0f),
+        std::invalid_argument
+    );
+
+    std::vector<fz_rect> valid_bboxes(text.size(), fz_empty_rect);
+    EXPECT_THROW(
+        (void)engine.CalculateExtractedSpans(text, valid_bboxes, labels, 1, 0.0f, 1000.0f),
+        std::invalid_argument
+    );
+    EXPECT_THROW(
+        (void)engine.CalculateExtractedSpans(text, valid_bboxes, labels, 1, 1000.0f, -10.0f),
+        std::invalid_argument
+    );
+}
+
+TEST(WorkerTests, ResolveConfidenceThreshold_Hierarchy) {
+    EXPECT_FLOAT_EQ(MLInferenceEngine::ResolveConfidenceThreshold(0.85f), 0.85f);
+    EXPECT_FLOAT_EQ(MLInferenceEngine::ResolveConfidenceThreshold(-1.0f), 0.50f);
+
+    setenv("GLINER_CONFIDENCE_THRESHOLD", "0.75", 1);
+    EXPECT_FLOAT_EQ(MLInferenceEngine::ResolveConfidenceThreshold(-1.0f), 0.75f);
+    unsetenv("GLINER_CONFIDENCE_THRESHOLD");
+}
+
 #include <fstream>
 #include <sstream>
 
-TEST(WorkerTests, MuPDFWrapperExtractsText) {
-    try {
-        std::ifstream file("tests/dummy.pdf", std::ios::binary);
-        if (!file.is_open()) {
-            file.open("../tests/dummy.pdf", std::ios::binary);
-        }
-        if (!file.is_open()) {
-            file.open("../../tests/dummy.pdf", std::ios::binary);
-        }
-        ASSERT_TRUE(file.is_open()) << "dummy.pdf not found in test dir";
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string pdf_data = buffer.str();
+TEST(WorkerTests, MuPDFWrapper_ApplyRedactions_PermanentGlyphErasure) {
+    const std::string text_pdf = 
+        "%PDF-1.4\n"
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
+        "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+        "5 0 obj << /Length 73 >> stream\n"
+        "BT\n"
+        "/F1 24 Tf\n"
+        "50 720 Td\n"
+        "(CONFIDENTIAL_KEY) Tj\n"
+        "/F1 12 Tf\n"
+        "0 -200 Td\n"
+        "(Public body info) Tj\n"
+        "ET\n"
+        "endstream\n"
+        "endobj\n"
+        "xref\n"
+        "0 6\n"
+        "0000000000 65535 f \n"
+        "0000000009 00000 n \n"
+        "0000000058 00000 n \n"
+        "0000000115 00000 n \n"
+        "0000000236 00000 n \n"
+        "0000000307 00000 n \n"
+        "trailer << /Size 6 /Root 1 0 R >>\n"
+        "startxref\n"
+        "432\n"
+        "%%EOF\n";
 
-        MuPDFWrapper mupdf(pdf_data);
-        ASSERT_EQ(mupdf.GetPageCount(), 1);
+    MuPDFWrapper mupdf(text_pdf);
+    ASSERT_EQ(mupdf.GetPageCount(), 1);
 
-        auto [text, char_bboxes] = mupdf.ExtractPageText(0);
-        EXPECT_GT(text.size(), 0);
-        EXPECT_GT(char_bboxes.size(), 0);
+    auto [initial_text, char_bboxes] = mupdf.ExtractPageText(0);
+    size_t key_pos = initial_text.find("CONFIDENTIAL_KEY");
+    ASSERT_NE(key_pos, std::string::npos);
 
-        // Test apply redaction
-        std::vector<fz_rect> redactions;
-        if (!char_bboxes.empty()) {
-            redactions.push_back(char_bboxes[0]);
+    // Compute bounding box from actual extracted character positions
+    fz_rect key_rect = fz_empty_rect;
+    for (size_t i = 0; i < 16; ++i) {
+        if (key_pos + i < char_bboxes.size() && !fz_is_empty_rect(char_bboxes[key_pos + i])) {
+            if (fz_is_empty_rect(key_rect)) {
+                key_rect = char_bboxes[key_pos + i];
+            } else {
+                key_rect = fz_union_rect(key_rect, char_bboxes[key_pos + i]);
+            }
         }
-        mupdf.ApplyRedactions(0, redactions);
-        
-        std::string redacted = mupdf.GetRedactedPdf();
-        EXPECT_GT(redacted.size(), 0);
-    } catch (const std::exception& e) {
-        FAIL() << "Uncaught exception: " << e.what();
     }
+    ASSERT_FALSE(fz_is_empty_rect(key_rect));
+
+    std::vector<fz_rect> redactions = {key_rect};
+    mupdf.ApplyRedactions(0, redactions);
+
+    std::string redacted_pdf_bytes = mupdf.GetRedactedPdf();
+    EXPECT_GT(redacted_pdf_bytes.size(), 0);
+
+    // Verify re-extraction from redacted PDF
+    MuPDFWrapper redacted_mupdf(redacted_pdf_bytes);
+    auto [after_text, after_bboxes] = redacted_mupdf.ExtractPageText(0);
+    EXPECT_EQ(after_text.find("CONFIDENTIAL_KEY"), std::string::npos);
+    EXPECT_NE(after_text.find("Public body info"), std::string::npos);
 }
 
+TEST(WorkerTests, MuPDFWrapper_ApplyNormalizedRedactions_MultiPageAndValidation) {
+    const std::string multi_page_pdf = 
+        "%PDF-1.4\n"
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        "2 0 obj << /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >> endobj\n"
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
+        "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+        "5 0 obj << /Length 50 >> stream\n"
+        "BT\n/F1 12 Tf\n50 700 Td\n(PageOneSecret) Tj\nET\n"
+        "endstream\nendobj\n"
+        "6 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >> endobj\n"
+        "7 0 obj << /Length 50 >> stream\n"
+        "BT\n/F1 12 Tf\n50 700 Td\n(PageTwoSecret) Tj\nET\n"
+        "endstream\nendobj\n"
+        "xref\n"
+        "0 8\n"
+        "0000000000 65535 f \n"
+        "0000000009 00000 n \n"
+        "0000000058 00000 n \n"
+        "0000000121 00000 n \n"
+        "0000000242 00000 n \n"
+        "0000000313 00000 n \n"
+        "0000000412 00000 n \n"
+        "0000000533 00000 n \n"
+        "trailer << /Size 8 /Root 1 0 R >>\n"
+        "startxref\n"
+        "632\n"
+        "%%EOF\n";
+
+    MuPDFWrapper mupdf(multi_page_pdf);
+    ASSERT_EQ(mupdf.GetPageCount(), 2);
+
+    ml::worker::v1::NormalizedRedactionBox box1;
+    box1.set_page_number(1);
+    box1.set_x0(0.0f); box1.set_y0(0.0f); box1.set_x1(1.0f); box1.set_y1(0.5f);
+
+    ml::worker::v1::NormalizedRedactionBox box2;
+    box2.set_page_number(2);
+    box2.set_x0(0.0f); box2.set_y0(0.0f); box2.set_x1(1.0f); box2.set_y1(0.5f);
+
+    // Degenerate box should be ignored without error
+    ml::worker::v1::NormalizedRedactionBox degenerate_box;
+    degenerate_box.set_page_number(1);
+    degenerate_box.set_x0(0.5f); degenerate_box.set_y0(0.5f); degenerate_box.set_x1(0.5f); degenerate_box.set_y1(0.5f);
+
+    std::vector<ml::worker::v1::NormalizedRedactionBox> custom_boxes = {box1, box2, degenerate_box};
+    mupdf.ApplyNormalizedRedactions(custom_boxes);
+
+    std::string redacted_bytes = mupdf.GetRedactedPdf();
+    EXPECT_GT(redacted_bytes.size(), 0);
+
+    // Out of bounds page check throws std::out_of_range
+    EXPECT_THROW(mupdf.ApplyRedactions(-1, {}), std::out_of_range);
+    EXPECT_THROW(mupdf.ApplyRedactions(10, {}), std::out_of_range);
+
+    ml::worker::v1::NormalizedRedactionBox out_of_range_box;
+    out_of_range_box.set_page_number(99);
+    std::vector<ml::worker::v1::NormalizedRedactionBox> bad_boxes = {out_of_range_box};
+    EXPECT_THROW(mupdf.ApplyNormalizedRedactions(bad_boxes), std::out_of_range);
+}
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);

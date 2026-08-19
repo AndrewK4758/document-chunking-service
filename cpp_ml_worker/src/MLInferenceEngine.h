@@ -3,12 +3,15 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <span>
+#include <cstdint>
+#include <stdexcept>
 
 #include <stdckdint.h>
 
 #include "mupdf/fitz.h"
-
-#include <span>
+#include "SpanGenerator.h"
+#include "ml_worker.pb.h"
 
 // Interface for Tokenizer to allow mocking in tests
 class ITokenizer {
@@ -17,8 +20,6 @@ public:
     virtual std::vector<int32_t> Encode(const std::string& text) = 0;
     virtual std::string Decode(const std::vector<int32_t>& ids) = 0;
 };
-
-#include "SpanGenerator.h"
 
 // Interface for ONNX inference to allow mocking in tests
 class IOnnxRunner {
@@ -38,14 +39,44 @@ public:
 class IMLInferenceEngine {
 public:
     virtual ~IMLInferenceEngine() = default;
-    virtual std::vector<fz_rect> CalculateRedactionBBoxes(const std::string& text, const std::vector<fz_rect>& char_bboxes, std::span<const std::string> dynamic_labels) = 0;
+    virtual std::vector<fz_rect> CalculateRedactionBBoxes(
+        const std::string& text,
+        const std::vector<fz_rect>& char_bboxes,
+        std::span<const std::string> dynamic_labels
+    ) = 0;
+
+    virtual std::vector<ml::worker::v1::ExtractedSpan> CalculateExtractedSpans(
+        const std::string& text,
+        const std::vector<fz_rect>& char_bboxes,
+        std::span<const std::string> dynamic_labels,
+        int page_number,
+        float page_width,
+        float page_height,
+        float threshold_override = -1.0f
+    ) = 0;
 };
 
 class MLInferenceEngine : public IMLInferenceEngine {
 public:
     MLInferenceEngine(std::unique_ptr<ITokenizer> tokenizer, std::unique_ptr<IOnnxRunner> onnx_runner);
 
-    std::vector<fz_rect> CalculateRedactionBBoxes(const std::string& text, const std::vector<fz_rect>& char_bboxes, std::span<const std::string> dynamic_labels) override;
+    std::vector<fz_rect> CalculateRedactionBBoxes(
+        const std::string& text,
+        const std::vector<fz_rect>& char_bboxes,
+        std::span<const std::string> dynamic_labels
+    ) override;
+
+    std::vector<ml::worker::v1::ExtractedSpan> CalculateExtractedSpans(
+        const std::string& text,
+        const std::vector<fz_rect>& char_bboxes,
+        std::span<const std::string> dynamic_labels,
+        int page_number,
+        float page_width,
+        float page_height,
+        float threshold_override = -1.0f
+    ) override;
+
+    [[nodiscard]] static float ResolveConfidenceThreshold(float threshold_override);
 
 private:
     std::unique_ptr<ITokenizer> tokenizer_;
