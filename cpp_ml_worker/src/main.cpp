@@ -82,13 +82,19 @@ namespace {
                 const int page_count = mupdf.GetPageCount();
                 spdlog::info("[JOB: {}]    -> Document loaded successfully with {} pages.", job_id, page_count);
 
-                spdlog::info("[JOB: {}] 3. Beginning page-by-page ML inference and redaction...", job_id);
+                std::vector<std::string> labels;
+                labels.reserve(request->dynamic_labels_size());
+                for (const auto& l : request->dynamic_labels()) {
+                    labels.push_back(l);
+                }
+
+                spdlog::info("[JOB: {}] 3. Beginning page-by-page ML inference and redaction with {} dynamic labels...", job_id, labels.size());
                 for (int i = 0; i < page_count; i++) {
                     spdlog::info("[JOB: {}]    -> [Page {}/{}] Extracting text and coordinates...", job_id, i+1, page_count);
                     auto [text, char_bboxes] = mupdf.ExtractPageText(i);
                     
                     spdlog::info("[JOB: {}]    -> [Page {}/{}] Running GLiNER ML Inference...", job_id, i+1, page_count);
-                    std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(text, char_bboxes);
+                    std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(text, char_bboxes, labels);
                     
                     spdlog::info("[JOB: {}]    -> [Page {}/{}] Identified {} PII elements. Applying redaction blocks...", job_id, i+1, page_count, bboxes.size());
                     mupdf.ApplyRedactions(i, bboxes);

@@ -32,16 +32,28 @@ namespace {
     };
 }
 
+#include "SpanGenerator.h"
+
 namespace {
     class MockOnnxRunner : public IOnnxRunner {
     public:
-        std::vector<int> RunInference(const std::vector<int32_t>& tokens) override {
-            std::vector<int> tags(tokens.size(), 0);
-            // Tag the second token as PII for test
-            if (tokens.size() > 1) {
-                tags[1] = 1;
+        std::vector<float> RunInference(
+            const std::vector<int64_t>& input_ids,
+            const std::vector<int64_t>& attention_mask,
+            const std::vector<int64_t>& words_mask,
+            size_t num_words,
+            size_t num_classes,
+            const doc_processor::GeneratedSpans& spans
+        ) override {
+            size_t total = num_words * 12 * num_classes;
+            std::vector<float> logits(total, -10.0f);
+            if (num_words > 1 && num_classes > 0) {
+                size_t idx = (1 * 12 + 0) * num_classes + 0;
+                if (idx < logits.size()) {
+                    logits[idx] = 10.0f;
+                }
             }
-            return tags;
+            return logits;
         }
     };
 }
@@ -57,20 +69,21 @@ TEST(WorkerTests, InferenceEngineCalculatesCorrectBBoxes) {
     
     MLInferenceEngine engine(std::move(tokenizer), std::move(onnx_runner));
 
-    const std::string text = "123451234512345"; // 15 characters -> 3 tokens
+    const std::string text = "12345 12345 12345";
     std::vector<fz_rect> char_bboxes;
-    for (int i = 0; i < 15; ++i) {
+    for (int i = 0; i < 17; ++i) {
         fz_rect r = { static_cast<float>(i)*10, 0, static_cast<float>(i + 1)*10, 10 };        char_bboxes.push_back(r);
     }
 
-    auto bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes);
+    std::vector<std::string> labels = {"TestLabel"};
+    auto bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes, labels);
     
-    // The second token (indices 5-9) was tagged as PII.
-    // Bbox should cover x from 50 to 100.
+    // The second word (indices 6-10) was tagged as PII.
+    // Bbox should cover x from 60 to 110.
     ASSERT_EQ(bboxes.size(), 1);
-    EXPECT_FLOAT_EQ(bboxes[0].x0, 50.0f);
+    EXPECT_FLOAT_EQ(bboxes[0].x0, 60.0f);
     EXPECT_FLOAT_EQ(bboxes[0].y0, 0.0f);
-    EXPECT_FLOAT_EQ(bboxes[0].x1, 100.0f);
+    EXPECT_FLOAT_EQ(bboxes[0].x1, 110.0f);
     EXPECT_FLOAT_EQ(bboxes[0].y1, 10.0f);
 }
 

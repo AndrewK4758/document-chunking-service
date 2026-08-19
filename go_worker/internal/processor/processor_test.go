@@ -116,7 +116,7 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+			TaskSubject: "worker.doc.inspect",
 			Payload:     payload,
 		},
 	})
@@ -167,7 +167,7 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+			TaskSubject: "worker.doc.inspect",
 			Payload:     payload,
 		},
 	})
@@ -210,7 +210,7 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+			TaskSubject: "worker.doc.inspect",
 			Payload:     payload,
 		},
 	})
@@ -246,7 +246,7 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+			TaskSubject: "worker.doc.inspect",
 			Payload:     payload,
 		},
 	})
@@ -280,7 +280,7 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+			TaskSubject: "worker.doc.inspect",
 			Payload:     payload,
 		},
 	})
@@ -323,7 +323,7 @@ func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
 		Identity:     &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+			TaskSubject: "worker.doc.inspect",
 			Payload:     payload,
 		},
 	})
@@ -354,7 +354,7 @@ func TestProcessZipFile_EnrichedErrorFormat(t *testing.T) {
 		Identity: &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
 		OriginalRequest: &pb.ExecuteTaskRequest{
 			Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-			TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+			TaskSubject: "worker.doc.inspect",
 			Payload:     payload,
 		},
 	})
@@ -550,7 +550,7 @@ func TestProcessZipFile_PDFTypeDetection(t *testing.T) {
 	chunker := NewChunkingProcessor(nil, store)
 	req := &pb.ExecuteTaskRequest{
 		Identity:    &pb.InfrastructureIdentity{TenantId: "t1", AppId: "a1", JobId: "j1"},
-		TaskSubject: pb.WorkerSubject_WORKER_DOC_INSPECT,
+		TaskSubject: "worker.doc.inspect",
 		Payload:     payload,
 	}
 	docs, traces, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{

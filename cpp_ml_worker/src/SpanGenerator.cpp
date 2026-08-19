@@ -26,18 +26,24 @@ GeneratedSpans SpanGenerator::Generate(size_t num_words, size_t max_span_len) {
     
     // Using C++23 ranges
     for (size_t start : std::views::iota(0uz, num_words)) {
-        size_t limit = std::min(num_words, start + max_span_len);
-        for (size_t end : std::views::iota(start, limit)) {
-            span_idx_view[idx, 0] = static_cast<int64_t>(start);
-            span_idx_view[idx, 1] = static_cast<int64_t>(end);
-            span_mask_view[idx] = 1;
+        for (size_t end_offset : std::views::iota(0uz, max_span_len)) {
+            size_t end = start + end_offset;
+            if (end < num_words) {
+                span_idx_view[idx, 0] = static_cast<int64_t>(start);
+                span_idx_view[idx, 1] = static_cast<int64_t>(end);
+                span_mask_view[idx] = 1;
+            } else {
+                // Pad the remaining spans for this start token
+                span_idx_view[idx, 0] = 0;
+                span_idx_view[idx, 1] = 0;
+                span_mask_view[idx] = 0;
+            }
             idx++;
         }
     }
 
-    result.num_spans = idx;
-    result.span_idx_storage.resize(idx * 2);
-    result.span_mask_storage.resize(idx);
+    // Do NOT resize down, ONNX model expects EXACTLY num_words * max_span_len
+    result.num_spans = est_spans;
 
     return result;
 }

@@ -10,12 +10,24 @@
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
     if (argc < 2) {
-        spdlog::error("Usage: {} <path_to_pdf>", argv[0]);
+        spdlog::error("Usage: {} <path_to_pdf> [label1] [label2] ...", argv[0]);
         return 1;
     }
 
     std::string pdf_path = argv[1];
+    std::vector<std::string> labels;
+    for (int i = 2; i < argc; ++i) {
+        labels.push_back(argv[i]);
+    }
+    if (labels.empty()) {
+        labels = {"person", "address", "phone number", "email", "ssn", "date of birth", "monetary amount", "order number", "loan number"};
+    }
+
     spdlog::info("Loading PDF from: {}", pdf_path);
+    spdlog::info("Active Dynamic Labels ({}):", labels.size());
+    for (const auto& l : labels) {
+        spdlog::info("  - '{}'", l);
+    }
 
     // Read the PDF file into a string buffer
     std::ifstream file(pdf_path, std::ios::binary);
@@ -59,8 +71,8 @@ int main(int argc, char** argv) {
                 spdlog::info("Preview: {}", text);
             }
 
-            spdlog::info("Running GLiNER Inference...");
-            std::vector<fz_rect> redaction_bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes);
+            spdlog::info("Running GLiNER Inference with {} dynamic labels...", labels.size());
+            std::vector<fz_rect> redaction_bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes, labels);
             
             spdlog::info("Found {} redaction blocks.", redaction_bboxes.size());
             for (size_t j = 0; j < redaction_bboxes.size(); j++) {

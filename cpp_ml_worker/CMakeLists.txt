@@ -17,9 +17,23 @@ include(FetchContent)
 if (TRUE)
   FetchContent_Declare(
     onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/onnxruntime-linux-x64-gpu-1.17.1.tgz
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-gpu-1.20.1.tgz
   )
   FetchContent_MakeAvailable(onnxruntime)
+
+  set(ORT_GPU_LIB "/home/ak/.asdf/installs/python/3.14.7/lib/python3.14/site-packages/onnxruntime/capi/libonnxruntime.so.1.29.0")
+  set(ORT_GPU_DIR "/home/ak/.asdf/installs/python/3.14.7/lib/python3.14/site-packages/onnxruntime/capi")
+
+  add_library(onnxruntime_imported SHARED IMPORTED GLOBAL)
+  set_target_properties(onnxruntime_imported PROPERTIES
+    IMPORTED_LOCATION "${ORT_GPU_LIB}"
+    INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include"
+    NO_SYSTEM_FROM_IMPORTED TRUE
+  )
+  set(CMAKE_BUILD_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64")
+  set(CMAKE_INSTALL_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64")
+  set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
 endif()
 
 # Fetch tokenizers-cpp
@@ -70,17 +84,17 @@ add_library(worker_lib
     ${PROTO_SRCS} ${GRPC_SRCS}
 )
 
-target_include_directories(worker_lib PUBLIC
-  src
-  ${PROTO_BUILD_DIR}
+target_include_directories(worker_lib BEFORE PUBLIC
   ${onnxruntime_SOURCE_DIR}/include
   ${tokenizers_cpp_SOURCE_DIR}/include
+  src
+  ${PROTO_BUILD_DIR}
 )
 
 target_link_libraries(worker_lib PUBLIC
   gRPC::grpc++
   protobuf::libprotobuf
-  onnxruntime
+  onnxruntime_imported
   tokenizers_cpp
   mupdf
   spdlog::spdlog
@@ -89,13 +103,21 @@ target_link_libraries(worker_lib PUBLIC
 
 add_executable(cpp_ml_worker src/main.cpp)
 target_link_libraries(cpp_ml_worker PRIVATE worker_lib)
+set_target_properties(cpp_ml_worker PROPERTIES
+  BUILD_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
+  INSTALL_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
+)
 
 add_executable(test_local tests/test_local.cpp)
 target_link_libraries(test_local PRIVATE worker_lib)
+set_target_properties(test_local PROPERTIES
+  BUILD_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
+  INSTALL_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
+)
 
 add_executable(print_onnx src/print_onnx.cpp)
 target_include_directories(print_onnx PRIVATE ${onnxruntime_SOURCE_DIR}/include)
-target_link_libraries(print_onnx PRIVATE onnxruntime spdlog::spdlog fmt::fmt)
+target_link_libraries(print_onnx PRIVATE onnxruntime_imported spdlog::spdlog fmt::fmt)
 
 enable_testing()
 find_package(GTest REQUIRED)
@@ -104,4 +126,8 @@ include(GoogleTest)
 add_executable(cpp_ml_worker_test tests/test_main.cpp tests/test_span_generator.cpp)
 target_include_directories(cpp_ml_worker_test PRIVATE src)
 target_link_libraries(cpp_ml_worker_test PRIVATE worker_lib GTest::gtest_main)
-gtest_discover_tests(cpp_ml_worker_test)
+set_target_properties(cpp_ml_worker_test PROPERTIES
+  BUILD_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
+  INSTALL_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
+)
+gtest_discover_tests(cpp_ml_worker_test DISCOVERY_MODE PRE_TEST)

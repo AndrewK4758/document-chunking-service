@@ -27,5 +27,25 @@ int main() {
         shape_str += "]";
         spdlog::info("   shape={}", shape_str);
     }
+    const size_t num_output_nodes = session.GetOutputCount();
+    spdlog::info("Number of outputs = {}", num_output_nodes);
+
+    for (size_t i = 0; i < num_output_nodes; i++) {
+        Ort::AllocatorWithDefaultOptions allocator;
+        auto output_name = session.GetOutputNameAllocated(i, allocator);
+        spdlog::info("Output {} : name={}", i, output_name.get());
+
+        Ort::TypeInfo type_info = session.GetOutputTypeInfo(i);
+        auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
+        spdlog::info("   type={}", static_cast<int>(tensor_info.GetElementType()));
+        
+        auto output_node_dims = tensor_info.GetShape();
+        std::string shape_str = "[";
+        for (size_t j = 0; j < output_node_dims.size(); j++) {
+            shape_str += std::to_string(output_node_dims[j]) + (j < output_node_dims.size() - 1 ? ", " : "");
+        }
+        shape_str += "]";
+        spdlog::info("   shape={}", shape_str);
+    }
     return 0;
 }
