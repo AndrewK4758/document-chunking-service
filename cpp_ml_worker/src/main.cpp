@@ -40,17 +40,9 @@ static bool load_env_file(const std::string& path) {
 }
 
 #include <csignal>
+#include <thread>
 
 namespace {
-    std::unique_ptr<grpc::Server> g_server;
-
-    void SignalHandler(int signum) {
-        spdlog::info("\nReceived signal {}. Shutting down server...", signum);
-        if (g_server) {
-            g_server->Shutdown();
-        }
-    }
-    
     class CppMlWorkerServiceImpl final : public CppMlWorkerService::Service {
     public:
         CppMlWorkerServiceImpl(const std::string& model_path, const std::string& tokenizer_path, const std::string& storage_gateway_uri) {
@@ -127,8 +119,11 @@ namespace {
 }
 
 int main(int argc, char** argv) {
-    std::signal(SIGINT, SignalHandler);
-    std::signal(SIGTERM, SignalHandler);
+    sigset_t sigset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGINT);
+    sigaddset(&sigset, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &sigset, nullptr);
 
     if (!load_env_file(".env") && !load_env_file("../.env")) {
         spdlog::warn("Failed to open environment file (.env or ../.env)");
@@ -163,14 +158,22 @@ int main(int argc, char** argv) {
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
 
-    g_server = builder.BuildAndStart();
-    if (!g_server) {
+    std::unique_ptr<Server> server = builder.BuildAndStart();
+    if (!server) {
         spdlog::error("Failed to bind and start gRPC server on {}", server_address);
         return 1;
     }
-    
+
+    std::jthread signal_handler_thread([&sigset, server_ptr = server.get()]() {
+        int signum = 0;
+        if (sigwait(&sigset, &signum) == 0) {
+            spdlog::info("Received signal {}. Shutting down server cleanly...", signum);
+            server_ptr->Shutdown();
+        }
+    });
+
     spdlog::info("Server listening on {}", server_address);
-    g_server->Wait();
+    server->Wait();
     
     spdlog::info("Server stopped cleanly.");
     return 0;
