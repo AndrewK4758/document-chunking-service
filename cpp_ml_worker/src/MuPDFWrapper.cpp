@@ -116,6 +116,8 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
         constexpr fz_stext_options stext_options = {0};
         text_page.reset(fz_new_stext_page_from_page(c, page.get(), &stext_options));
         if (text_page) {
+            data.text.reserve(4096);
+            data.char_bboxes.reserve(4096);
             for (fz_stext_page_block_iterator pos = fz_stext_page_block_iterator_begin(text_page.get());
                  pos.block != nullptr;
                  pos = fz_stext_page_block_iterator_next(pos)) {
@@ -124,8 +126,45 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
                 if (block->type == FZ_STEXT_BLOCK_TEXT) {
                     for (fz_stext_line* line = block->u.t.first_line; line; line = line->next) {
                         for (fz_stext_char* ch = line->first_char; ch; ch = ch->next) {
-                            data.text += static_cast<char>(ch->c);
-                            data.char_bboxes.push_back(fz_rect_from_quad(ch->quad));
+                            int code = ch->c;
+                            fz_rect r = fz_rect_from_quad(ch->quad);
+                            if (code >= 0 && code <= 0x7F) {
+                                data.text.push_back(static_cast<char>(code));
+                                data.char_bboxes.push_back(r);
+                            } else if (code >= 0x80 && code <= 0x7FF) {
+                                data.text.push_back(static_cast<char>(0xC0 | ((code >> 6) & 0x1F)));
+                                data.text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                                data.char_bboxes.push_back(r);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                            } else if (code >= 0x800 && code <= 0xFFFF) {
+                                if (code >= 0xD800 && code <= 0xDFFF) {
+                                    data.text.append("\xEF\xBF\xBD", 3);
+                                    data.char_bboxes.push_back(r);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                } else {
+                                    data.text.push_back(static_cast<char>(0xE0 | ((code >> 12) & 0x0F)));
+                                    data.text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                                    data.text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                                    data.char_bboxes.push_back(r);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                }
+                            } else if (code >= 0x10000 && code <= 0x10FFFF) {
+                                data.text.push_back(static_cast<char>(0xF0 | ((code >> 18) & 0x07)));
+                                data.text.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+                                data.text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                                data.text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                                data.char_bboxes.push_back(r);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                            } else {
+                                data.text.append("\xEF\xBF\xBD", 3);
+                                data.char_bboxes.push_back(r);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                            }
                         }
                         data.text += ' ';
                         data.char_bboxes.push_back(fz_empty_rect);
@@ -135,6 +174,7 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
                 }
             }
         }
+
     } fz_catch(c) {
         throw std::runtime_error(std::string("ExtractPageText error: ") + fz_caught_message(c));
     }

@@ -10,6 +10,7 @@
 #include <mdspan>
 #include <onnxruntime_cxx_api.h>
 #include <ranges>
+#include <simdutf.h>
 #include "tokenizers_cpp/tokenizers_cpp.h"
 #include "SpanGenerator.h"
 
@@ -17,6 +18,76 @@ MLInferenceEngine::MLInferenceEngine(std::unique_ptr<ITokenizer> tokenizer, std:
     : tokenizer_(std::move(tokenizer)), onnx_runner_(std::move(onnx_runner)) {
     if (!tokenizer_ || !onnx_runner_) {
         throw std::runtime_error("MLInferenceEngine initialized with null components");
+    }
+}
+
+namespace doc_processor {
+    std::string& SanitizeUtf8(std::string_view input, std::string& scratch) {
+        scratch.clear();
+        if (input.empty()) {
+            return scratch;
+        }
+
+        // Fast path: valid UTF-8 passes through directly
+        if (simdutf::validate_utf8(input.data(), input.size())) {
+            scratch.assign(input.data(), input.size());
+            return scratch;
+        }
+
+        // Slow path: scan and replace invalid sequences with U+FFFD (0xEF, 0xBF, 0xBD)
+        const char* ptr = input.data();
+        size_t len = input.size();
+
+        while (len > 0) {
+            auto result = simdutf::validate_utf8_with_errors(ptr, len);
+            if (result.error == simdutf::error_code::SUCCESS) {
+                scratch.append(ptr, len);
+                break;
+            }
+
+            if (result.count > 0) {
+                scratch.append(ptr, result.count);
+                ptr += result.count;
+                len -= result.count;
+            }
+
+            if (len == 0) {
+                break;
+            }
+
+            // Replace invalid sequence with Unicode replacement character U+FFFD
+            scratch.append("\xEF\xBF\xBD", 3);
+
+            unsigned char lead = static_cast<unsigned char>(*ptr);
+            size_t skip = 1;
+            if (lead >= 0xC0 && lead <= 0xDF && len >= 2) {
+                if ((static_cast<unsigned char>(ptr[1]) & 0xC0) == 0x80) {
+                    skip = 2;
+                }
+            } else if (lead >= 0xE0 && lead <= 0xEF && len >= 3) {
+                if ((static_cast<unsigned char>(ptr[1]) & 0xC0) == 0x80 &&
+                    (static_cast<unsigned char>(ptr[2]) & 0xC0) == 0x80) {
+                    skip = 3;
+                }
+            } else if (lead >= 0xF0 && lead <= 0xF4 && len >= 4) {
+                if ((static_cast<unsigned char>(ptr[1]) & 0xC0) == 0x80 &&
+                    (static_cast<unsigned char>(ptr[2]) & 0xC0) == 0x80 &&
+                    (static_cast<unsigned char>(ptr[3]) & 0xC0) == 0x80) {
+                    skip = 4;
+                }
+            }
+
+            ptr += skip;
+            len -= skip;
+        }
+
+        return scratch;
+    }
+
+    std::string SanitizeUtf8(std::string_view input) {
+        std::string scratch;
+        scratch.reserve(input.size() + 16);
+        return SanitizeUtf8(input, scratch);
     }
 }
 
@@ -28,32 +99,8 @@ namespace {
         fz_rect bbox;
     };
 
-    std::string SanitizeUtf8(const std::string& input) {
-        std::string out;
-        out.reserve(input.size());
-        for (size_t i = 0; i < input.size(); ) {
-            if (const auto c = static_cast<unsigned char>(input[i]); c <= 0x7F) {
-                out += input[i++];
-            } else if (c >= 0xC2 && c <= 0xDF) {
-                if (i + 1 < input.size() && (static_cast<unsigned char>(input[i+1]) & 0xC0) == 0x80) {
-                    out += input[i++]; out += input[i++];
-                } else { out += ' '; i++; }
-            } else if (c >= 0xE0 && c <= 0xEF) {
-                if (i + 2 < input.size() && (static_cast<unsigned char>(input[i+1]) & 0xC0) == 0x80 && (static_cast<unsigned char>(input[i+2]) & 0xC0) == 0x80) {
-                    out += input[i++]; out += input[i++]; out += input[i++];
-                } else { out += ' '; i++; }
-            } else if (c >= 0xF0 && c <= 0xF4) {
-                if (i + 3 < input.size() && (static_cast<unsigned char>(input[i+1]) & 0xC0) == 0x80 && (static_cast<unsigned char>(input[i+2]) & 0xC0) == 0x80 && (static_cast<unsigned char>(input[i+3]) & 0xC0) == 0x80) {
-                    out += input[i++]; out += input[i++]; out += input[i++]; out += input[i++];
-                } else { out += ' '; i++; }
-            } else {
-                out += ' '; i++;
-            }
-        }
-        return out;
-    }
-
     struct CandidateKey {
+
         size_t start_word;
         size_t end_word;
         std::string label;
@@ -157,6 +204,12 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
 
     std::map<CandidateKey, float> candidate_map;
 
+    // Hoist scratchpad string buffers with reserve(4096) per MPL-316 §5.4
+    std::string label_scratch;
+    label_scratch.reserve(4096);
+    std::string word_scratch;
+    word_scratch.reserve(4096);
+
     size_t num_total_words = words.size();
     for (size_t window_start = 0; window_start < num_total_words; ) {
         size_t window_end = std::min(window_start + WINDOW_SIZE, num_total_words);
@@ -168,7 +221,8 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
 
         for (const auto& label : dynamic_labels) {
             input_ids.push_back(128002); // <<ENT>>
-            std::vector<int32_t> l_tokens = tokenizer_->Encode(SanitizeUtf8(label));
+            doc_processor::SanitizeUtf8(label, label_scratch);
+            std::vector<int32_t> l_tokens = tokenizer_->Encode(label_scratch);
             for (int32_t t : l_tokens) {
                 input_ids.push_back(t);
             }
@@ -179,7 +233,8 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
 
         for (size_t wi = window_start; wi < window_end; ++wi) {
             const auto& w = words[wi];
-            std::vector<int32_t> w_tokens = tokenizer_->Encode(SanitizeUtf8(w.text));
+            doc_processor::SanitizeUtf8(w.text, word_scratch);
+            std::vector<int32_t> w_tokens = tokenizer_->Encode(word_scratch);
             int64_t word_idx = static_cast<int64_t>(wi - window_start + 1);
 
             if (w_tokens.empty()) {
@@ -196,6 +251,7 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
         }
 
         input_ids.push_back(2); // [SEP]
+
         words_mask.push_back(0);
 
         std::vector<int64_t> attention_mask(input_ids.size(), 1);
