@@ -574,9 +574,49 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 		if p.CppMlClient != nil {
 			addTrace(fmt.Sprintf("%s is being routed to CPP ML Worker autonomously for testing.", filepath.Base(pdfPath)), "INFO")
+			// MPL-320: dynamic label taxonomy expansion (O(1) dedup, budget, fail-fast)
+			canonicals := []string{"loan_amount", "interest_rate", "file_number", "closing_date"}
+			// Prefer payload-derived canonicals if available via expected schema (dynamic)
+			if payload != nil && payload.NodeConfig != nil && payload.NodeConfig.ExpectedSchemaStruct != nil {
+				if vals := payload.NodeConfig.ExpectedSchemaStruct.GetFields(); vals != nil {
+					if f, ok := vals["dynamic_labels"]; ok && f != nil {
+						if lv := f.GetListValue(); lv != nil {
+							var extracted []string
+							for _, v := range lv.Values {
+								if s := v.GetStringValue(); s != "" {
+									extracted = append(extracted, s)
+								}
+							}
+							if len(extracted) > 0 {
+								canonicals = extracted
+							}
+						}
+					}
+				}
+			}
+			tax, hash, _ := LoadTaxonomy(TaxonomyPath())
+			exp := NewExpander(tax, hash)
+			expanded, reverse, expErr := exp.Expand(canonicals)
+			if expErr != nil {
+				if IsFailFast() {
+					return nil, traceEvents, fmt.Errorf("[Step: TAXONOMY_EXPANSION, URI: %s] %w", docUri, expErr)
+				}
+				addTrace(fmt.Sprintf("Taxonomy expansion failed (non-fail-fast): %v", expErr), "WARN")
+				expanded = canonicals
+				reverse = make(map[string]string)
+				for _, c := range canonicals {
+					reverse[c] = c
+				}
+			}
 			mlReq := &pb.RedactDocumentRequest{
-				Identity:    req.GetIdentity(),
-				DocumentUri: docUri,
+				Identity:      req.GetIdentity(),
+				DocumentUri:   docUri,
+				DynamicLabels: expanded,
+			}
+			// Propagate W3C trace + taxonomy hash
+			ctx = PropagateTraceContext(ctx)
+			if hash != "" {
+				ctx = context.WithValue(ctx, "taxonomy_hash", hash)
 			}
 			resp, mlErr := p.CppMlClient.RedactDocument(ctx, mlReq)
 			if mlErr != nil {
@@ -586,6 +626,19 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			if !resp.GetSuccess() {
 				addTrace(fmt.Sprintf("CPP ML Worker failed: %s", resp.GetErrorMessage()), "ERROR")
 				return nil, traceEvents, fmt.Errorf("[Step: ML_WORKER, URI: %s] CPP ML Worker returned failure: %s", docUri, resp.GetErrorMessage())
+			}
+			// Post-normalize extracted spans: label→canonical + value canonicalization (money/date)
+			for _, span := range resp.GetExtractedSpans() {
+				canonical, matched, _ := NormalizeSpanLabel(span.GetLabel(), reverse, exp)
+				normVal, nerr := NormalizeValue(span.GetText(), canonical)
+				if nerr != nil {
+					if IsFailFast() {
+						return nil, traceEvents, fmt.Errorf("[Step: VALUE_NORMALIZATION, URI: %s] %w", docUri, nerr)
+					}
+					addTrace(fmt.Sprintf("Value normalization failed for %q canonical %q: %v", span.GetText(), canonical, nerr), "WARN")
+					normVal = span.GetText()
+				}
+				addTrace(fmt.Sprintf("Normalized span label %q→%q matched %q value %q→%q", span.GetLabel(), canonical, matched, span.GetText(), normVal), "DEBUG")
 			}
 
 			processedDocs = append(processedDocs, &pb.ProcessedDocument{

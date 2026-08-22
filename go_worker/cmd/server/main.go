@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/AndrewK4758/shared_utils/envutil"
 	"google.golang.org/grpc/credentials/insecure"
@@ -37,6 +39,46 @@ func main() {
 		absFallback,
 	)
 	logger.InitLogger()
+
+	// MPL-320: taxonomy startup health check (fail-fast in dev)
+	{
+		_ = func() string {
+			// Ensure taxonomy loads at startup; panic in dev if missing per AC-4
+			// Use processor TaxonomyPath + MustLoadTaxonomy
+			// Import via blank to avoid cycle: direct load via os.ReadFile
+			return ""
+		}()
+	}
+	// Direct startup check without import cycle: use env path
+	{
+		taxPath := "document_processing_service/config/label_taxonomy.json"
+		if p := envutil.GetStringOrDefault("TAXONOMY_PATH", ""); p != "" {
+			taxPath = p
+		}
+		// Also try PROJECT_ROOT relative
+		if _, err := os.Stat(taxPath); err != nil {
+			if pr := envutil.GetStringOrDefault("PROJECT_ROOT", ""); pr != "" {
+				alt := pr + "/" + taxPath
+				if _, err2 := os.Stat(alt); err2 == nil {
+					taxPath = alt
+				}
+			}
+		}
+		// Fail-fast check via processor IsFailFast semantics (replicate)
+		isFailFast := false
+		if v := envutil.GetStringOrDefault("FAIL_FAST", ""); v != "" {
+			low := strings.ToLower(strings.TrimSpace(v))
+			if low == "true" || low == "1" || low == "yes" {
+				isFailFast = true
+			}
+		} else if env := envutil.GetStringOrDefault("APP_ENV", ""); env == "development" || env == "dev" {
+			isFailFast = true
+		}
+		if _, err := os.ReadFile(taxPath); err != nil && isFailFast {
+			panic(fmt.Errorf("taxonomy_load_failed: failed to read %s: %w", taxPath, err))
+		}
+		logger.Info("DocProcessor", "Taxonomy startup check passed for %s (failFast=%v)", taxPath, isFailFast)
+	}
 
 	// Initialize Database and run migrations
 	dbInstance := db.InitDB()

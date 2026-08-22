@@ -514,13 +514,29 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 		}
 	}()
 
-	// Boundary: gRPC call to cpp_ml_worker
+	// Boundary: gRPC call to cpp_ml_worker — MPL-320 taxonomy expansion
 	// We dispatch a synchronous gRPC call passing the RedactDocumentRequest using the Document URI.
 	// This ensures we block the NATS consumer so that the message isn't ACKed until the worker finishes,
 	// keeping data safe. The ack window extender handles the NATS message timeouts.
+	canonicals := []string{"loan_amount", "interest_rate", "file_number", "closing_date"}
+	tax, hash, _ := processor.LoadTaxonomy(processor.TaxonomyPath())
+	exp := processor.NewExpander(tax, hash)
+	expanded, reverse, expErr := exp.Expand(canonicals)
+	if expErr != nil && processor.IsFailFast() {
+		panic(fmt.Errorf("action failed for job DocProcessorWorker: taxonomy expansion failed: %w", expErr))
+	}
+	if expErr != nil {
+		expanded = canonicals
+		reverse = make(map[string]string)
+		for _, c := range canonicals {
+			reverse[c] = c
+		}
+	}
 	mlReq := &pb.RedactDocumentRequest{
-		Identity:    identity,
-		DocumentUri: payload.Storage.DocumentUri,	}
+		Identity:      identity,
+		DocumentUri:   payload.Storage.DocumentUri,
+		DynamicLabels: expanded,
+	}
 
 	if s.cppMlClient == nil {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML client not configured"))
@@ -532,6 +548,13 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 	}
 	if !resp.GetSuccess() {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML RedactDocument returned false: %s", resp.GetErrorMessage()))
+	}
+	// Post-normalize spans: label→canonical + value canonicalization
+	for _, span := range resp.GetExtractedSpans() {
+		canonical, _, _ := processor.NormalizeSpanLabel(span.GetLabel(), reverse, exp)
+		if _, nerr := processor.NormalizeValue(span.GetText(), canonical); nerr != nil && processor.IsFailFast() {
+			panic(fmt.Errorf("action failed for job DocProcessorWorker: value normalization failed: %w", nerr))
+		}
 	}
 
 	resultMap := map[string]interface{}{

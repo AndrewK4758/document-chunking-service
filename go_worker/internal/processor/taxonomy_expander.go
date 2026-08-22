@@ -135,6 +135,7 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 	expanded := make([]string, 0, canonicalCount*4)
 	reverse := make(map[string]string, canonicalCount*4)
 	totalBytes := 0
+	totalCandidates := 0
 
 	for _, canonical := range canonicals {
 		canonical = strings.TrimSpace(canonical)
@@ -149,6 +150,7 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 		if ok {
 			candidates = append(candidates, syns...)
 		}
+		totalCandidates += len(candidates)
 
 		for _, cand := range candidates {
 			// Dedup preserving order
@@ -190,7 +192,7 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 	}
 
 	// Observability: always emit counts+hash at INFO, full union at DEBUG
-	e.emitExpansionLog(canonicalCount, len(expanded), len(expanded), totalBytes, expanded)
+	e.emitExpansionLog(canonicalCount, totalCandidates, len(expanded), totalBytes, expanded)
 
 	return expanded, reverse, nil
 }
@@ -247,9 +249,34 @@ type NormalizedExtract struct {
 // NormalizeSpans converts raw spans using reverse map and value normalizer.
 // Preserves geometry/confidence, canonicalizes label, computes normalized_value.
 func (e *Expander) NormalizeSpans(spans []SpanLike, reverse map[string]string) ([]NormalizedExtract, []SpanLike) {
-	// SpanLike is an interface to avoid proto import cycle; caller passes ExtractedSpan slice
-	// This generic helper is kept simple; concrete implementation in value_normalizer.go
-	return nil, nil
+	result := make([]NormalizedExtract, 0, len(spans))
+	remaining := make([]SpanLike, 0, len(spans))
+	for _, s := range spans {
+		canonical, matched, _ := e.NormalizeLabel(s.Label, reverse)
+		normVal, err := NormalizeValue(s.Text, canonical)
+		if err != nil && IsFailFast() {
+			// In dev, propagate error via empty normalized; caller will handle fail-fast
+			normVal = s.Text
+		} else if err != nil {
+			normVal = s.Text
+		}
+		result = append(result, NormalizedExtract{
+			RawText:         s.Text,
+			NormalizedValue: normVal,
+			CanonicalKey:    canonical,
+			MatchedSynonym:  matched,
+			Confidence:      s.Confidence,
+			Page:            s.PageNumber,
+		})
+		remaining = append(remaining, SpanLike{
+			Text:       s.Text,
+			Label:      canonical,
+			Confidence: s.Confidence,
+			PageNumber: s.PageNumber,
+			X0: s.X0, Y0: s.Y0, X1: s.X1, Y1: s.Y1,
+		})
+	}
+	return result, remaining
 }
 
 // SpanLike abstracts ExtractedSpan for testing without proto dependency

@@ -21,12 +21,26 @@ const (
 )
 
 // TaxonomyPath returns filesystem path for taxonomy JSON.
-// Env TAXONOMY_PATH overrides default.
+// Env TAXONOMY_PATH overrides default. Falls back to PROJECT_ROOT if present.
 func TaxonomyPath() string {
 	if p := os.Getenv("TAXONOMY_PATH"); p != "" {
 		return p
 	}
-	return "document_processing_service/config/label_taxonomy.json"
+	base := "document_processing_service/config/label_taxonomy.json"
+	if pr := os.Getenv("PROJECT_ROOT"); pr != "" {
+		alt := pr + "/" + base
+		if _, err := os.Stat(alt); err == nil {
+			return alt
+		}
+	}
+	// Also try relative to working dir's parent (for go_worker binary)
+	if _, err := os.Stat(base); err == nil {
+		return base
+	}
+	if _, err := os.Stat("../" + base); err == nil {
+		return "../" + base
+	}
+	return base
 }
 
 // IsFailFast returns true when development fail-fast is enabled.

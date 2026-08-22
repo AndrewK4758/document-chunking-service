@@ -65,9 +65,20 @@ func (s *DocumentProcessingServer) ProcessDocument(ctx context.Context, req *pb.
 
 	g.Go(func() error {
 		start := time.Now()
+		canonicals := []string{"loan_amount", "interest_rate", "file_number", "closing_date"}
+		tax, hash, _ := processor.LoadTaxonomy(processor.TaxonomyPath())
+		exp := processor.NewExpander(tax, hash)
+		expanded, reverse, expErr := exp.Expand(canonicals)
+		if expErr != nil && processor.IsFailFast() {
+			cppErr = fmt.Errorf("taxonomy expansion failed: %w", expErr)
+			return nil
+		}
+		_ = reverse
+		_ = hash
 		resp, err := s.cppMlWorker.RedactDocument(ctx, &pb.RedactDocumentRequest{
-			DocumentUri: req.DocumentUri,
-			Identity:    req.Identity,
+			DocumentUri:   req.DocumentUri,
+			Identity:      req.Identity,
+			DynamicLabels: expanded,
 		})
 		cppDuration = time.Since(start)
 		if err != nil {
