@@ -1,0 +1,8 @@
+{
+  "loan_amount": ["loan amount", "loan amt", "principal", "loan amt.", "loan amount:"],
+  "interest_rate": ["interest rate", "int rate", "rate"],
+  "file_number": ["file #", "file no", "order #", "order number", "order:"],
+  "closing_date": ["closing date", "date issued", "disbursement date"],
+  "order_number": ["order number", "order #", "order no"],
+  "effective_date": ["effective date", "dated as of", "as of date"]
+}
