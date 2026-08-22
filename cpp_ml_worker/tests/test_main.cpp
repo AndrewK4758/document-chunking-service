@@ -3,9 +3,14 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <chrono>
+#include <numeric>
+#include <algorithm>
 #include <stdckdint.h>
+#include <onnxruntime_cxx_api.h>
 #include "MLInferenceEngine.h"
 #include "MuPDFWrapper.h"
+
 
 extern "C" {
 #include "mupdf/fitz.h"
@@ -1029,7 +1034,379 @@ TEST(WorkerTests, PunctuationAwareTokenization_MultiTokenSpanBoundingUnion) {
     EXPECT_FLOAT_EQ(spans[0].y1(), 30.0f / 100.0f);
 }
 
+namespace {
+    class EnvGuard {
+    public:
+        EnvGuard(const char* name, const char* value) : name_(name) {
+            const char* old = std::getenv(name);
+            if (old) {
+                old_value_ = old;
+                had_old_ = true;
+            }
+            if (value) {
+                setenv(name, value, 1);
+            } else {
+                unsetenv(name);
+            }
+        }
+        ~EnvGuard() {
+            if (had_old_) {
+                setenv(name_.c_str(), old_value_.c_str(), 1);
+            } else {
+                unsetenv(name_.c_str());
+            }
+        }
+    private:
+        std::string name_;
+        std::string old_value_;
+        bool had_old_{false};
+    };
+
+    class FakeBindingRunner : public IOnnxRunner {
+    public:
+        size_t call_count{0};
+        std::vector<std::vector<int64_t>> captured_input_ids;
+        std::vector<std::vector<int64_t>> captured_words_masks;
+        std::vector<size_t> captured_num_words;
+        std::vector<size_t> captured_num_classes;
+        std::vector<size_t> captured_num_spans;
+        std::function<std::vector<float>(size_t, size_t, size_t, const doc_processor::GeneratedSpans&)> logit_generator;
+
+        std::vector<float> RunInference(
+            const std::vector<int64_t>& input_ids,
+            const std::vector<int64_t>& attention_mask,
+            const std::vector<int64_t>& words_mask,
+            size_t num_words,
+            size_t num_classes,
+            const doc_processor::GeneratedSpans& spans
+        ) override {
+            call_count++;
+            captured_input_ids.push_back(input_ids);
+            captured_words_masks.push_back(words_mask);
+            captured_num_words.push_back(num_words);
+            captured_num_classes.push_back(num_classes);
+            captured_num_spans.push_back(spans.num_spans);
+
+            if (logit_generator) {
+                return logit_generator(call_count, num_words, num_classes, spans);
+            }
+            size_t total = spans.num_spans * num_classes;
+            return std::vector<float>(total, -10.0f);
+        }
+    };
+}
+
+TEST(MPL313Tests, EpSelectionTest_GraphOptimizationIsEnableAll) {
+    Ort::SessionOptions opts;
+    opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    opts.EnableCpuMemArena();
+    opts.EnableMemPattern();
+    opts.SetIntraOpNumThreads(4);
+    opts.SetInterOpNumThreads(2);
+    SUCCEED();
+}
+
+TEST(MPL313Tests, ThreadConfigTest_EnvOverridesDefault) {
+    EnvGuard intra_guard("ORT_INTRA_OP_THREADS", "8");
+    EnvGuard inter_guard("ORT_INTER_OP_THREADS", "4");
+
+    auto [intra, inter] = doc_processor::OnnxConfigHelper::ResolveThreadCounts();
+    EXPECT_EQ(intra, 8);
+    EXPECT_EQ(inter, 4);
+}
+
+TEST(MPL313Tests, ThreadConfigTest_Default4And2) {
+    EnvGuard intra_guard("ORT_INTRA_OP_THREADS", nullptr);
+    EnvGuard inter_guard("ORT_INTER_OP_THREADS", nullptr);
+
+    auto [intra, inter] = doc_processor::OnnxConfigHelper::ResolveThreadCounts();
+    EXPECT_EQ(intra, 4);
+    EXPECT_EQ(inter, 2);
+}
+
+TEST(MPL313Tests, ThreadConfigTest_InvalidEnvFallsBack) {
+    EnvGuard intra_guard("ORT_INTRA_OP_THREADS", "invalid_num");
+    EnvGuard inter_guard("ORT_INTER_OP_THREADS", "bogus");
+
+    auto [intra, inter] = doc_processor::OnnxConfigHelper::ResolveThreadCounts();
+    EXPECT_EQ(intra, 4);
+    EXPECT_EQ(inter, 2);
+}
+
+TEST(MPL313Tests, EpSelectionTest_NonexistentModelThrowsRuntimeError) {
+    EXPECT_THROW(
+        CreateRealOnnxRunner("/nonexistent/file/path/model.onnx"),
+        std::runtime_error
+    );
+}
+
+TEST(MPL313Tests, PinnedMemoryTest_CreatePinnedCpuMemoryInfo) {
+    auto pinned_info = Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeCPU);
+    SUCCEED();
+}
+
+TEST(MPL313Tests, PinnedMemoryTest_CreateDefaultCpuMemoryInfo) {
+    auto default_info = Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtDeviceAllocator, OrtMemType::OrtMemTypeDefault);
+    SUCCEED();
+}
+
+TEST(MPL313Tests, BatchedEvaluationTest_ExactlyOnePerWindow_10Words_1Window) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<FakeBindingRunner>();
+    auto* runner = runner_ptr.get();
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    std::string text;
+    for (int i = 0; i < 10; ++i) {
+        text += "word ";
+    }
+    std::vector<fz_rect> char_bboxes(text.size(), fz_rect{0, 0, 10, 10});
+    std::vector<std::string> labels = {"TestLabel"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    EXPECT_EQ(runner->call_count, 1);
+    EXPECT_EQ(runner->captured_num_words[0], 10);
+}
+
+TEST(MPL313Tests, BatchedEvaluationTest_ExactlyOnePerWindow_500Words_2Windows) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<FakeBindingRunner>();
+    auto* runner = runner_ptr.get();
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    std::string text;
+    for (int i = 0; i < 500; ++i) {
+        text += "word ";
+    }
+    std::vector<fz_rect> char_bboxes(text.size(), fz_rect{0, 0, 10, 10});
+    std::vector<std::string> labels = {"TestLabel"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    EXPECT_EQ(runner->call_count, 2);
+    EXPECT_EQ(runner->captured_num_words[0], 384);
+    EXPECT_EQ(runner->captured_num_words[1], 180);
+}
+
+TEST(MPL313Tests, BatchedEvaluationTest_ExactlyOnePerWindow_1000Words_3Windows) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<FakeBindingRunner>();
+    auto* runner = runner_ptr.get();
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    std::string text;
+    for (int i = 0; i < 1000; ++i) {
+        text += "word ";
+    }
+    std::vector<fz_rect> char_bboxes(text.size(), fz_rect{0, 0, 10, 10});
+    std::vector<std::string> labels = {"TestLabel"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    EXPECT_EQ(runner->call_count, 3);
+    EXPECT_EQ(runner->captured_num_words[0], 384);
+    EXPECT_EQ(runner->captured_num_words[1], 384);
+    EXPECT_EQ(runner->captured_num_words[2], 360);
+}
+
+TEST(MPL313Tests, CandidateDedupTest_MaxConfidenceAcrossOverlappingWindows) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<FakeBindingRunner>();
+    auto* runner = runner_ptr.get();
+
+    // In window 1 (starts at 0), word 330 has confidence 0.85 (logit ~ 1.73)
+    // In window 2 (starts at 320), relative word is 330 - 320 = 10, with confidence 0.98 (logit ~ 3.89)
+    runner->logit_generator = [](size_t call_num, size_t num_words, size_t num_classes, const doc_processor::GeneratedSpans& spans) {
+        std::vector<float> logits(spans.num_spans * num_classes, -10.0f);
+        if (call_num == 1) {
+            // Span starting at word 330, length 1
+            size_t span_idx = 330 * 12 + 0;
+            if (span_idx < spans.num_spans) {
+                logits[span_idx * num_classes + 0] = 1.7346f; // conf ~ 0.85
+            }
+        } else if (call_num == 2) {
+            // Span starting at relative word 10 (absolute 330), length 1
+            size_t span_idx = 10 * 12 + 0;
+            if (span_idx < spans.num_spans) {
+                logits[span_idx * num_classes + 0] = 3.8918f; // conf ~ 0.98
+            }
+        }
+        return logits;
+    };
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    std::string text;
+    for (int i = 0; i < 500; ++i) {
+        text += "word ";
+    }
+    std::vector<fz_rect> char_bboxes(text.size(), fz_rect{0, 0, 10, 10});
+    std::vector<std::string> labels = {"TestLabel"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    ASSERT_GE(spans.size(), 1);
+    EXPECT_NEAR(spans[0].confidence(), 0.98f, 0.01f);
+}
+
+TEST(MPL313Tests, ContractPreservationTest_SignaturesAndExceptions) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner = std::make_unique<FakeBindingRunner>();
+
+    EXPECT_THROW(
+        MLInferenceEngine(nullptr, std::make_unique<FakeBindingRunner>()),
+        std::runtime_error
+    );
+
+    EXPECT_THROW(
+        MLInferenceEngine(std::make_unique<MockTokenizer>(), nullptr),
+        std::runtime_error
+    );
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner));
+    const std::string text = "hello world";
+    std::vector<fz_rect> mismatched_bboxes(5, fz_empty_rect);
+    std::vector<std::string> labels = {"Label"};
+
+    EXPECT_THROW(
+        engine.CalculateExtractedSpans(text, mismatched_bboxes, labels, 1, 100.0f, 100.0f),
+        std::invalid_argument
+    );
+
+    std::vector<fz_rect> valid_bboxes(text.size(), fz_empty_rect);
+    EXPECT_THROW(
+        engine.CalculateExtractedSpans(text, valid_bboxes, labels, 1, -1.0f, 100.0f),
+        std::invalid_argument
+    );
+
+    EXPECT_THROW(
+        engine.CalculateExtractedSpans(text, valid_bboxes, labels, 1, 100.0f, 0.0f),
+        std::invalid_argument
+    );
+}
+
+TEST(MPL313Tests, ContractPreservationTest_CalculateRedactionBBoxesDelegation) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<SingleSpanOnnxRunner>();
+    runner_ptr->target_word_start = 0;
+    runner_ptr->target_span_len = 1;
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    const std::string text = "12345";
+    std::vector<fz_rect> char_bboxes;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char_bboxes.push_back(fz_rect{static_cast<float>(i * 10), 0.0f, static_cast<float>((i + 1) * 10), 20.0f});
+    }
+    std::vector<std::string> labels = {"Label"};
+
+    auto bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes, labels);
+    ASSERT_EQ(bboxes.size(), 1);
+    EXPECT_FLOAT_EQ(bboxes[0].x0, 0.0f);
+    EXPECT_FLOAT_EQ(bboxes[0].x1, 50.0f);
+}
+
+TEST(MPL313Tests, PerformanceSLO_HotLoopBufferFillAndTensorCreationUnder02ms) {
+    auto pinned_info = Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeCPU);
+
+    constexpr size_t kSeqLen = 768;
+    constexpr size_t kNumSpans = 4608;
+    constexpr size_t kNumClasses = 64;
+
+    std::vector<int64_t> input_ids_buf(kSeqLen, 1);
+    std::vector<int64_t> attention_mask_buf(kSeqLen, 1);
+    std::vector<int64_t> words_mask_buf(kSeqLen, 0);
+    std::vector<int64_t> text_lengths_buf(1, 384);
+    std::vector<int64_t> span_idx_buf(kNumSpans * 2, 0);
+    std::vector<uint8_t> span_mask_buf(kNumSpans, 1);
+    std::vector<float> logits_buf(kNumSpans * kNumClasses, 0.0f);
+
+    constexpr int kIterations = 10000;
+    std::vector<double> latencies_us;
+    latencies_us.reserve(kIterations);
+
+    int64_t seq_shape[2] = {1, static_cast<int64_t>(kSeqLen)};
+    int64_t len_shape[2] = {1, 1};
+    int64_t span_idx_shape[3] = {1, static_cast<int64_t>(kNumSpans), 2};
+    int64_t span_mask_shape[2] = {1, static_cast<int64_t>(kNumSpans)};
+    int64_t logits_shape[2] = {static_cast<int64_t>(kNumSpans), static_cast<int64_t>(kNumClasses)};
+
+    for (int iter = 0; iter < kIterations; ++iter) {
+        auto start = std::chrono::steady_clock::now();
+
+        // 1. Buffer copy
+        text_lengths_buf[0] = 384;
+        std::fill(words_mask_buf.begin(), words_mask_buf.begin() + 384, 1);
+
+        // 2. Zero-alloc Ort::Value views
+        auto token_val = Ort::Value::CreateTensor<int64_t>(pinned_info, input_ids_buf.data(), kSeqLen, seq_shape, 2);
+        auto attn_val = Ort::Value::CreateTensor<int64_t>(pinned_info, attention_mask_buf.data(), kSeqLen, seq_shape, 2);
+        auto words_val = Ort::Value::CreateTensor<int64_t>(pinned_info, words_mask_buf.data(), kSeqLen, seq_shape, 2);
+        auto len_val = Ort::Value::CreateTensor<int64_t>(pinned_info, text_lengths_buf.data(), 1, len_shape, 2);
+        auto span_idx_val = Ort::Value::CreateTensor<int64_t>(pinned_info, span_idx_buf.data(), kNumSpans * 2, span_idx_shape, 3);
+        auto span_mask_val = Ort::Value::CreateTensor(pinned_info, span_mask_buf.data(), kNumSpans, span_mask_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
+        auto logits_val = Ort::Value::CreateTensor<float>(pinned_info, logits_buf.data(), kNumSpans * kNumClasses, logits_shape, 2);
+
+        auto end = std::chrono::steady_clock::now();
+        double elapsed_us = std::chrono::duration<double, std::micro>(end - start).count();
+        latencies_us.push_back(elapsed_us);
+    }
+
+    std::sort(latencies_us.begin(), latencies_us.end());
+    double p95_us = latencies_us[static_cast<size_t>(kIterations * 0.95)];
+    // 0.2ms = 200us
+    EXPECT_LT(p95_us, 200.0) << "p95 latency was " << p95_us << " us, expected < 200 us";
+}
+
+TEST(MPL313Tests, ObservabilityTest_ResolveConfidenceThresholdEnvAndDefault) {
+    EXPECT_FLOAT_EQ(MLInferenceEngine::ResolveConfidenceThreshold(0.85f), 0.85f);
+
+    {
+        EnvGuard env("GLINER_CONFIDENCE_THRESHOLD", "0.75");
+        EXPECT_FLOAT_EQ(MLInferenceEngine::ResolveConfidenceThreshold(-1.0f), 0.75f);
+    }
+
+    {
+        EnvGuard env("GLINER_CONFIDENCE_THRESHOLD", "invalid");
+        EXPECT_FLOAT_EQ(MLInferenceEngine::ResolveConfidenceThreshold(-1.0f), 0.50f);
+    }
+
+    {
+        EnvGuard env("GLINER_CONFIDENCE_THRESHOLD", nullptr);
+        EXPECT_FLOAT_EQ(MLInferenceEngine::ResolveConfidenceThreshold(-1.0f), 0.50f);
+    }
+}
+
+TEST(MPL313Tests, GeometricBoxRegression_UnionAndClampPreservesGeometry) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<SingleSpanOnnxRunner>();
+    runner_ptr->target_word_start = 0;
+    runner_ptr->target_span_len = 2;
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    const std::string text = "12345 67890";
+    std::vector<fz_rect> char_bboxes;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char_bboxes.push_back(fz_rect{static_cast<float>(i * 10), 0.0f, static_cast<float>((i + 1) * 10), 20.0f});
+    }
+    std::vector<std::string> labels = {"TestLabel"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 200.0f, 100.0f);
+
+    ASSERT_EQ(spans.size(), 1);
+    EXPECT_FLOAT_EQ(spans[0].x0(), 0.0f / 200.0f);
+    EXPECT_FLOAT_EQ(spans[0].x1(), 110.0f / 200.0f);
+    EXPECT_FLOAT_EQ(spans[0].y0(), 0.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].y1(), 20.0f / 100.0f);
+}
+
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+

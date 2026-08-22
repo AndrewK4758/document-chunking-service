@@ -372,36 +372,127 @@ namespace {
 
 #include <spdlog/spdlog.h>
 
+namespace doc_processor {
+    std::pair<int, int> OnnxConfigHelper::ResolveThreadCounts() {
+        int intra = 4;
+        int inter = 2;
+        if (const char* v = std::getenv("ORT_INTRA_OP_THREADS")) {
+            try {
+                intra = std::stoi(v);
+            } catch (const std::exception& e) {
+                spdlog::warn("Invalid ORT_INTRA_OP_THREADS '{}': {}. Defaulting to 4.", v, e.what());
+            }
+        }
+        if (const char* v = std::getenv("ORT_INTER_OP_THREADS")) {
+            try {
+                inter = std::stoi(v);
+            } catch (const std::exception& e) {
+                spdlog::warn("Invalid ORT_INTER_OP_THREADS '{}': {}. Defaulting to 2.", v, e.what());
+            }
+        }
+        return {intra, inter};
+    }
+}
+
 namespace {
+    struct OrtCudaOptionsV2Deleter {
+        void operator()(OrtCUDAProviderOptionsV2* ptr) const noexcept {
+            if (ptr) {
+                Ort::GetApi().ReleaseCUDAProviderOptions(ptr);
+            }
+        }
+    };
+    using UniqueCudaOptionsV2 = std::unique_ptr<OrtCUDAProviderOptionsV2, OrtCudaOptionsV2Deleter>;
+
     class RealOnnxRunner : public IOnnxRunner {
     public:
         explicit RealOnnxRunner(const std::string& path) : env_(ORT_LOGGING_LEVEL_WARNING, "MLWorkerEnv") {
+            auto [intra, inter] = doc_processor::OnnxConfigHelper::ResolveThreadCounts();
+            intra_threads_ = intra;
+            inter_threads_ = inter;
+
             bool session_created = false;
             try {
-                Ort::SessionOptions cuda_session_options;
-                OrtCUDAProviderOptions cuda_options;
-                cuda_options.device_id = 0;
-                cuda_session_options.AppendExecutionProvider_CUDA(cuda_options);
-                cuda_session_options.SetIntraOpNumThreads(4);
-                cuda_session_options.SetInterOpNumThreads(2);
-                session_ = std::make_unique<Ort::Session>(env_, path.c_str(), cuda_session_options);
+                Ort::SessionOptions cuda_opts;
+                ConfigureSessionOptions(cuda_opts, intra_threads_, inter_threads_);
+
+                OrtCUDAProviderOptionsV2* raw_cuda = nullptr;
+                Ort::ThrowOnError(Ort::GetApi().CreateCUDAProviderOptions(&raw_cuda));
+                UniqueCudaOptionsV2 cuda_provider_opts(raw_cuda);
+
+                int device_id = 0;
+                if (const char* v = std::getenv("ORT_CUDA_DEVICE_ID")) {
+                    try { device_id = std::stoi(v); } catch (...) {}
+                }
+                std::string device_id_str = std::to_string(device_id);
+
+                std::string gpu_mem_limit_str = std::to_string(SIZE_MAX);
+                if (const char* v = std::getenv("ORT_CUDA_GPU_MEM_LIMIT")) {
+                    gpu_mem_limit_str = v;
+                }
+
+                std::string arena_extend_strategy_str = "kNextPowerOfTwo";
+                if (const char* v = std::getenv("ORT_CUDA_ARENA_EXTEND_STRATEGY")) {
+                    arena_extend_strategy_str = v;
+                }
+
+                std::string cudnn_conv_algo_search_str = "EXHAUSTIVE";
+                if (const char* v = std::getenv("ORT_CUDA_CUDNN_CONV_ALGO_SEARCH")) {
+                    cudnn_conv_algo_search_str = v;
+                }
+
+                std::string do_copy_in_default_stream_str = "1";
+                if (const char* v = std::getenv("ORT_CUDA_DO_COPY_IN_DEFAULT_STREAM")) {
+                    do_copy_in_default_stream_str = v;
+                }
+
+                std::vector<const char*> keys = {
+                    "device_id", "gpu_mem_limit", "arena_extend_strategy",
+                    "cudnn_conv_algo_search", "do_copy_in_default_stream"
+                };
+                std::vector<const char*> vals = {
+                    device_id_str.c_str(), gpu_mem_limit_str.c_str(),
+                    arena_extend_strategy_str.c_str(), cudnn_conv_algo_search_str.c_str(),
+                    do_copy_in_default_stream_str.c_str()
+                };
+
+                Ort::ThrowOnError(Ort::GetApi().UpdateCUDAProviderOptions(
+                    cuda_provider_opts.get(), keys.data(), vals.data(), keys.size()
+                ));
+
+                cuda_opts.AppendExecutionProvider_CUDA_V2(*cuda_provider_opts);
+                session_ = std::make_unique<Ort::Session>(env_, path.c_str(), cuda_opts);
                 session_created = true;
-                spdlog::info("Successfully initialized ONNX Runtime with CUDA Execution Provider (GPU device 0).");
+                cuda_selected_ = true;
+                spdlog::info("ONNX EP selected: CUDA device {}, ORT_ENABLE_ALL (intra={}, inter={})", device_id, intra_threads_, inter_threads_);
             } catch (const std::exception& e) {
                 spdlog::warn("CUDA Execution Provider initialization unavailable: {}. Falling back to CPU Execution Provider.", e.what());
             }
 
             if (!session_created) {
                 try {
-                    Ort::SessionOptions cpu_session_options;
-                    cpu_session_options.SetIntraOpNumThreads(4);
-                    cpu_session_options.SetInterOpNumThreads(2);
-                    session_ = std::make_unique<Ort::Session>(env_, path.c_str(), cpu_session_options);
-                    spdlog::info("Successfully initialized ONNX Runtime with CPU Execution Provider.");
+                    Ort::SessionOptions cpu_opts;
+                    ConfigureSessionOptions(cpu_opts, intra_threads_, inter_threads_);
+                    session_ = std::make_unique<Ort::Session>(env_, path.c_str(), cpu_opts);
+                    session_created = true;
+                    cuda_selected_ = false;
+                    spdlog::info("ONNX EP selected: CPU, ORT_ENABLE_ALL (intra={}, inter={})", intra_threads_, inter_threads_);
                 } catch (const Ort::Exception& e) {
                     throw std::runtime_error("Failed to load ONNX model: " + std::string(e.what()));
                 }
             }
+
+            if (cuda_selected_) {
+                pinned_info_ = std::make_unique<Ort::MemoryInfo>(
+                    Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeCPU)
+                );
+            } else {
+                pinned_info_ = std::make_unique<Ort::MemoryInfo>(
+                    Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtDeviceAllocator, OrtMemType::OrtMemTypeDefault)
+                );
+            }
+
+            PreallocateEnvelope();
         }
 
         std::vector<float> RunInference(
@@ -412,7 +503,7 @@ namespace {
             size_t num_classes,
             const doc_processor::GeneratedSpans& spans
         ) override {
-            if (input_ids.empty() || num_words == 0 || num_classes == 0) return {};
+            if (input_ids.empty() || num_words == 0 || num_classes == 0 || spans.num_spans == 0) return {};
             // mdspan extent validation per MPL-312 §5.4 — layout_right, zero extra copy
             {
                 auto input_ids_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(input_ids.data(), 1, input_ids.size());
@@ -429,58 +520,120 @@ namespace {
                 }
             }
 
-            Ort::AllocatorWithDefaultOptions allocator;
-            
-            std::vector<int64_t> input_shape = {1, static_cast<int64_t>(input_ids.size())};
-            auto token_tensor = Ort::Value::CreateTensor<int64_t>(allocator, input_shape.data(), input_shape.size());
-            std::copy(input_ids.begin(), input_ids.end(), token_tensor.GetTensorMutableData<int64_t>());
-            
-            auto attn_tensor = Ort::Value::CreateTensor<int64_t>(allocator, input_shape.data(), input_shape.size());
-            std::copy(attention_mask.begin(), attention_mask.end(), attn_tensor.GetTensorMutableData<int64_t>());
-            
-            auto words_tensor = Ort::Value::CreateTensor<int64_t>(allocator, input_shape.data(), input_shape.size());
-            std::copy(words_mask.begin(), words_mask.end(), words_tensor.GetTensorMutableData<int64_t>());
+            EnsureCapacity(input_ids.size(), spans.num_spans, num_classes);
 
-            std::vector<int64_t> len_shape = {1, 1};
-            auto len_tensor = Ort::Value::CreateTensor<int64_t>(allocator, len_shape.data(), len_shape.size());
-            len_tensor.GetTensorMutableData<int64_t>()[0] = static_cast<int64_t>(num_words);
-
-            std::vector<int64_t> span_idx_shape = {1, static_cast<int64_t>(spans.num_spans), 2};
-            auto span_idx_tensor = Ort::Value::CreateTensor<int64_t>(allocator, span_idx_shape.data(), span_idx_shape.size());
-            std::copy(spans.span_idx_storage.begin(), spans.span_idx_storage.end(), span_idx_tensor.GetTensorMutableData<int64_t>());
-
-            std::vector<int64_t> span_mask_shape = {1, static_cast<int64_t>(spans.num_spans)};
-            auto span_mask_tensor = Ort::Value::CreateTensor<bool>(allocator, span_mask_shape.data(), span_mask_shape.size());
-            bool* mask_ptr = span_mask_tensor.GetTensorMutableData<bool>();
+            std::copy(input_ids.begin(), input_ids.end(), input_ids_buf_.begin());
+            std::copy(attention_mask.begin(), attention_mask.end(), attention_mask_buf_.begin());
+            std::copy(words_mask.begin(), words_mask.end(), words_mask_buf_.begin());
+            text_lengths_buf_[0] = static_cast<int64_t>(num_words);
+            std::copy(spans.span_idx_storage.begin(), spans.span_idx_storage.end(), span_idx_buf_.begin());
             for (size_t i = 0; i < spans.num_spans; ++i) {
-                mask_ptr[i] = spans.span_mask_storage[i] != 0;
+                span_mask_buf_[i] = (spans.span_mask_storage[i] != 0) ? 1 : 0;
             }
 
-            std::vector<Ort::Value> input_tensors;
-            input_tensors.push_back(std::move(token_tensor));
-            input_tensors.push_back(std::move(attn_tensor));
-            input_tensors.push_back(std::move(words_tensor));
-            input_tensors.push_back(std::move(len_tensor));
-            input_tensors.push_back(std::move(span_idx_tensor));
-            input_tensors.push_back(std::move(span_mask_tensor));
+            int64_t seq_shape[2] = {1, static_cast<int64_t>(input_ids.size())};
+            auto token_val = Ort::Value::CreateTensor<int64_t>(*pinned_info_, input_ids_buf_.data(), input_ids.size(), seq_shape, 2);
+            auto attn_val = Ort::Value::CreateTensor<int64_t>(*pinned_info_, attention_mask_buf_.data(), attention_mask.size(), seq_shape, 2);
+            auto words_val = Ort::Value::CreateTensor<int64_t>(*pinned_info_, words_mask_buf_.data(), words_mask.size(), seq_shape, 2);
 
-            const char* input_names[] = {"input_ids", "attention_mask", "words_mask", "text_lengths", "span_idx", "span_mask"};
-            const char* output_names[] = {"logits"};
+            int64_t len_shape[2] = {1, 1};
+            auto len_val = Ort::Value::CreateTensor<int64_t>(*pinned_info_, text_lengths_buf_.data(), 1, len_shape, 2);
 
-            auto output_tensors = session_->Run(Ort::RunOptions{nullptr}, input_names, input_tensors.data(), 6, output_names, 1);
+            int64_t span_idx_shape[3] = {1, static_cast<int64_t>(spans.num_spans), 2};
+            auto span_idx_val = Ort::Value::CreateTensor<int64_t>(*pinned_info_, span_idx_buf_.data(), spans.num_spans * 2, span_idx_shape, 3);
 
-            const auto* logits_raw = output_tensors[0].GetTensorMutableData<float>();
-            auto type_info = output_tensors[0].GetTensorTypeAndShapeInfo();
-            size_t total_elements = type_info.GetElementCount();
+            int64_t span_mask_shape[2] = {1, static_cast<int64_t>(spans.num_spans)};
+            auto span_mask_val = Ort::Value::CreateTensor(*pinned_info_, span_mask_buf_.data(), spans.num_spans, span_mask_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
 
-            return std::vector<float>(logits_raw, logits_raw + total_elements);
+            size_t total_logits = spans.num_spans * num_classes;
+            int64_t logits_shape[2] = {static_cast<int64_t>(spans.num_spans), static_cast<int64_t>(num_classes)};
+            auto logits_val = Ort::Value::CreateTensor<float>(*pinned_info_, logits_buf_.data(), total_logits, logits_shape, 2);
+
+            Ort::IoBinding binding(*session_);
+            binding.BindInput("input_ids", token_val);
+            binding.BindInput("attention_mask", attn_val);
+            binding.BindInput("words_mask", words_val);
+            binding.BindInput("text_lengths", len_val);
+            binding.BindInput("span_idx", span_idx_val);
+            binding.BindInput("span_mask", span_mask_val);
+            binding.BindOutput("logits", logits_val);
+
+            session_->Run(Ort::RunOptions{nullptr}, binding);
+
+            return std::vector<float>(logits_buf_.data(), logits_buf_.data() + total_logits);
+        }
+
+        void EnsureCapacity(size_t seq_len, size_t num_spans, size_t num_classes) {
+            if (seq_len <= cap_seq_len_ && num_spans <= cap_spans_ && num_classes <= cap_classes_) {
+                return;
+            }
+            size_t new_seq_len = seq_len > cap_seq_len_ ? std::max(seq_len, cap_seq_len_ * 2) : cap_seq_len_;
+            size_t new_spans = num_spans > cap_spans_ ? std::max(num_spans, cap_spans_ * 2) : cap_spans_;
+            size_t new_classes = num_classes > cap_classes_ ? std::max(num_classes, cap_classes_ * 2) : cap_classes_;
+
+            spdlog::info("RealOnnxRunner buffer growth: seq_len {} -> {}, spans {} -> {}, classes {} -> {}",
+                         cap_seq_len_, new_seq_len, cap_spans_, new_spans, cap_classes_, new_classes);
+
+            cap_seq_len_ = new_seq_len;
+            cap_spans_ = new_spans;
+            cap_classes_ = new_classes;
+
+            input_ids_buf_.resize(cap_seq_len_);
+            attention_mask_buf_.resize(cap_seq_len_);
+            words_mask_buf_.resize(cap_seq_len_);
+            span_idx_buf_.resize(cap_spans_ * 2);
+            span_mask_buf_.resize(cap_spans_);
+            logits_buf_.resize(cap_spans_ * cap_classes_);
         }
 
     private:
+        static void ConfigureSessionOptions(Ort::SessionOptions& opts, int intra_threads, int inter_threads) {
+            opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            opts.EnableCpuMemArena();
+            opts.EnableMemPattern();
+            opts.SetIntraOpNumThreads(intra_threads);
+            opts.SetInterOpNumThreads(inter_threads);
+        }
+
+        void PreallocateEnvelope() {
+            size_t init_seq_len = 768;
+            if (const char* v = std::getenv("ORT_MAX_SEQ_LEN")) {
+                try { init_seq_len = std::stoul(v); } catch (...) {}
+            }
+            cap_seq_len_ = init_seq_len;
+            cap_spans_ = 4608;
+            cap_classes_ = 64;
+
+            input_ids_buf_.resize(cap_seq_len_);
+            attention_mask_buf_.resize(cap_seq_len_);
+            words_mask_buf_.resize(cap_seq_len_);
+            text_lengths_buf_.assign(1, 0);
+            span_idx_buf_.resize(cap_spans_ * 2);
+            span_mask_buf_.resize(cap_spans_);
+            logits_buf_.resize(cap_spans_ * cap_classes_);
+        }
+
         Ort::Env env_;
         std::unique_ptr<Ort::Session> session_;
+        std::unique_ptr<Ort::MemoryInfo> pinned_info_;
+        bool cuda_selected_{false};
+        int intra_threads_{4};
+        int inter_threads_{2};
+
+        size_t cap_seq_len_{768};
+        size_t cap_spans_{4608};
+        size_t cap_classes_{64};
+
+        std::vector<int64_t> input_ids_buf_;
+        std::vector<int64_t> attention_mask_buf_;
+        std::vector<int64_t> words_mask_buf_;
+        std::vector<int64_t> text_lengths_buf_;
+        std::vector<int64_t> span_idx_buf_;
+        std::vector<uint8_t> span_mask_buf_;
+        std::vector<float> logits_buf_;
     };
 }
+
 
 std::unique_ptr<ITokenizer> CreateRealTokenizer(const std::string& path) {
     return std::make_unique<RealTokenizer>(path);

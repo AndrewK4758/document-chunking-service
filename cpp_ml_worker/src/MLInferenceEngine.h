@@ -83,6 +83,13 @@ private:
     std::unique_ptr<IOnnxRunner> onnx_runner_;
 };
 
+namespace doc_processor {
+    struct OnnxConfigHelper {
+        static std::pair<int, int> ResolveThreadCounts();
+    };
+}
+
 // Factory functions that can fail-fast if files are missing
 std::unique_ptr<ITokenizer> CreateRealTokenizer(const std::string& tokenizer_json_path);
 std::unique_ptr<IOnnxRunner> CreateRealOnnxRunner(const std::string& model_path);
+

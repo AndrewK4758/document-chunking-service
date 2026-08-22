@@ -137,7 +137,9 @@ add_executable(cpp_ml_worker_test tests/test_main.cpp tests/test_span_generator.
 target_include_directories(cpp_ml_worker_test PRIVATE src)
 target_link_libraries(cpp_ml_worker_test PRIVATE worker_lib GTest::gtest_main)
 set_target_properties(cpp_ml_worker_test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/../../bin_tests"
   BUILD_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
   INSTALL_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64"
 )
+
 gtest_discover_tests(cpp_ml_worker_test DISCOVERY_MODE PRE_TEST)
