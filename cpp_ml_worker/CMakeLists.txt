@@ -3,6 +3,7 @@ project(cpp_ml_worker)
 
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out)
 
 find_package(gRPC REQUIRED)
@@ -80,6 +81,7 @@ add_library(worker_lib
     src/StorageGatewayClient.cpp
     src/MLInferenceEngine.cpp
     src/MuPDFWrapper.cpp
+    src/FzContextPool.cpp
     src/SpanGenerator.cpp
     src/SpatialLayoutAnalyzer.cpp
     ${PROTO_SRCS} ${GRPC_SRCS}
@@ -101,6 +103,7 @@ target_link_libraries(worker_lib PUBLIC
   spdlog::spdlog
   fmt::fmt
 )
+target_compile_features(worker_lib PUBLIC cxx_std_26)
 
 add_executable(cpp_ml_worker src/main.cpp)
 target_link_libraries(cpp_ml_worker PRIVATE worker_lib)
