@@ -13,6 +13,7 @@
 #include "MuPDFWrapper.h"
 #include "MLInferenceEngine.h"
 #include "FzContextPool.h"
+#include "GrpcStatusHelper.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -63,10 +64,10 @@ namespace {
         Status RedactDocument(ServerContext* context, const RedactDocumentRequest* request, RedactDocumentResponse* response) override {
             try {
                 if (request->document_uri().empty()) {
-                    throw std::runtime_error("Missing document_uri in request");
+                    throw std::invalid_argument("Missing document_uri in request");
                 }
                 if (!request->has_identity()) {
-                    throw std::runtime_error("Missing identity in request");
+                    throw std::invalid_argument("Missing identity in request");
                 }
 
                 std::string job_id = request->identity().job_id();
@@ -112,64 +113,28 @@ namespace {
 
             } catch (const std::invalid_argument& ex) {
                 std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
-                std::string detail = job_id.empty() ? ex.what() : "[JOB: " + job_id + "] " + ex.what();
-                std::string traceparent;
-                if (context) {
-                    auto meta = context->client_metadata();
-                    auto it = meta.find("traceparent");
-                    if (it != meta.end()) traceparent = std::string(it->second.data(), it->second.size());
-                    auto it2 = meta.find("grpc-trace-bin");
-                    if (traceparent.empty() && it2 != meta.end()) traceparent = std::string(it2->second.data(), it2->second.size());
-                }
-                try {
-                    spdlog::error("[JOB: {}] gRPC RedactDocument failed code=INVALID_ARGUMENT traceparent={} what={}", job_id.empty() ? "unknown" : job_id, traceparent.empty() ? "-" : traceparent, ex.what());
-                } catch (...) {}
-                return Status(grpc::StatusCode::INVALID_ARGUMENT, detail);
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromException(ex, job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
             } catch (const std::out_of_range& ex) {
                 std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
-                std::string detail = job_id.empty() ? ex.what() : "[JOB: " + job_id + "] " + ex.what();
-                std::string traceparent;
-                if (context) {
-                    auto meta = context->client_metadata();
-                    auto it = meta.find("traceparent");
-                    if (it != meta.end()) traceparent = std::string(it->second.data(), it->second.size());
-                    auto it2 = meta.find("grpc-trace-bin");
-                    if (traceparent.empty() && it2 != meta.end()) traceparent = std::string(it2->second.data(), it2->second.size());
-                }
-                try {
-                    spdlog::error("[JOB: {}] gRPC RedactDocument failed code=INVALID_ARGUMENT traceparent={} what={}", job_id.empty() ? "unknown" : job_id, traceparent.empty() ? "-" : traceparent, ex.what());
-                } catch (...) {}
-                return Status(grpc::StatusCode::INVALID_ARGUMENT, detail);
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromException(ex, job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
             } catch (const std::exception& ex) {
                 std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
-                std::string detail = job_id.empty() ? ex.what() : "[JOB: " + job_id + "] " + ex.what();
-                std::string traceparent;
-                if (context) {
-                    auto meta = context->client_metadata();
-                    auto it = meta.find("traceparent");
-                    if (it != meta.end()) traceparent = std::string(it->second.data(), it->second.size());
-                    auto it2 = meta.find("grpc-trace-bin");
-                    if (traceparent.empty() && it2 != meta.end()) traceparent = std::string(it2->second.data(), it2->second.size());
-                }
-                try {
-                    spdlog::error("[JOB: {}] gRPC RedactDocument failed code=INTERNAL traceparent={} what={}", job_id.empty() ? "unknown" : job_id, traceparent.empty() ? "-" : traceparent, ex.what());
-                } catch (...) {}
-                return Status(grpc::StatusCode::INTERNAL, detail);
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromException(ex, job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
             } catch (...) {
                 std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
-                std::string detail = job_id.empty() ? "Unknown exception" : "[JOB: " + job_id + "] Unknown exception";
-                std::string traceparent;
-                if (context) {
-                    auto meta = context->client_metadata();
-                    auto it = meta.find("traceparent");
-                    if (it != meta.end()) traceparent = std::string(it->second.data(), it->second.size());
-                    auto it2 = meta.find("grpc-trace-bin");
-                    if (traceparent.empty() && it2 != meta.end()) traceparent = std::string(it2->second.data(), it2->second.size());
-                }
-                try {
-                    spdlog::error("[JOB: {}] gRPC RedactDocument failed code=INTERNAL traceparent={} what=Unknown exception", job_id.empty() ? "unknown" : job_id, traceparent.empty() ? "-" : traceparent);
-                } catch (...) {}
-                return Status(grpc::StatusCode::INTERNAL, detail);
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromUnknown(job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
             }
         }
 
