@@ -52,6 +52,15 @@ public:
 
     [[nodiscard]] std::string GetRedactedPdf() const;
 
+    // Post-redaction verification — dual-oracle (Layer 1 structural + Layer 2 byte scan)
+    [[nodiscard]] int CountIntersectingGlyphs(const std::string& redacted_pdf_bytes, const std::vector<fz_rect>& boxes, int page_index) const;
+    [[nodiscard]] int CountPlaintextOccurrences(const std::string& redacted_pdf_bytes, const std::vector<std::string>& plaintexts) const;
+    void VerifyPostRedaction(const std::string& redacted_pdf_bytes,
+                             const std::map<int, std::vector<fz_rect>>& per_page_boxes,
+                             const std::vector<std::string>& target_plaintexts,
+                             const std::string& job_id,
+                             const std::string& traceparent = "") const;
+
 private:
     fz_context* ctx() const noexcept { return pooled_ctx_.get(); }
     void ensure_valid() const;

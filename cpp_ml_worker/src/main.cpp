@@ -87,6 +87,8 @@ namespace {
                 }
 
                 spdlog::info("[JOB: {}] 3. Beginning page-by-page ML inference and redaction with {} dynamic labels...", job_id, labels.size());
+                std::map<int, std::vector<fz_rect>> per_page_boxes;
+                std::vector<std::string> target_plaintexts;
                 for (int i = 0; i < page_count; i++) {
                     spdlog::info("[JOB: {}]    -> [Page {}/{}] Extracting text and coordinates...", job_id, i+1, page_count);
                     auto [text, char_bboxes] = mupdf.ExtractPageText(i);
@@ -95,11 +97,37 @@ namespace {
                     std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(text, char_bboxes, labels);
                     
                     spdlog::info("[JOB: {}]    -> [Page {}/{}] Identified {} PII elements. Applying redaction blocks...", job_id, i+1, page_count, bboxes.size());
+                    if (!bboxes.empty()) {
+                        per_page_boxes[i] = bboxes;
+                        if (!text.empty()) {
+                            size_t ws = text.find(' ');
+                            std::string preview = (ws == std::string::npos) ? text.substr(0, 16) : text.substr(0, std::min<size_t>(ws, 16));
+                            if (!preview.empty()) target_plaintexts.push_back(preview);
+                        }
+                    }
                     mupdf.ApplyRedactions(i, bboxes);
                 }
 
                 spdlog::info("[JOB: {}] 4. Serializing redacted PDF document back to memory...", job_id);
                 std::string redacted_pdf_data = mupdf.GetRedactedPdf();
+
+                {
+                    std::string traceparent;
+                    auto meta = context->client_metadata();
+                    auto it = meta.find("traceparent");
+                    if (it != meta.end()) traceparent = std::string(it->second.data(), it->second.size());
+                    else {
+                        auto it2 = meta.find("grpc-trace-bin");
+                        if (it2 != meta.end()) traceparent = std::string(it2->second.data(), it2->second.size());
+                    }
+                    try {
+                        mupdf.VerifyPostRedaction(redacted_pdf_data, per_page_boxes, target_plaintexts, job_id, traceparent);
+                        spdlog::info("[JOB: {}] 4b. Post-redaction verification PASSED (0 surviving glyphs/bytes)", job_id);
+                    } catch (const std::exception& vex) {
+                        spdlog::critical("[SEAM: LINEAGE_GAP] Verification failed for job_id={} : {}", job_id, vex.what());
+                        throw;
+                    }
+                }
                 
                 spdlog::info("[JOB: {}] 5. Uploading final redacted document to Storage Gateway...", job_id);
                 std::string storage_uri = storage_client_->Upload("redacted_" + request->document_uri(), request->identity(), redacted_pdf_data);

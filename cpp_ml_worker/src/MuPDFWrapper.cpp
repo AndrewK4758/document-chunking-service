@@ -116,6 +116,8 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
         constexpr fz_stext_options stext_options = {0};
         text_page.reset(fz_new_stext_page_from_page(c, page.get(), &stext_options));
         if (text_page) {
+            data.text.reserve(4096);
+            data.char_bboxes.reserve(4096);
             for (fz_stext_page_block_iterator pos = fz_stext_page_block_iterator_begin(text_page.get());
                  pos.block != nullptr;
                  pos = fz_stext_page_block_iterator_next(pos)) {
@@ -124,8 +126,45 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
                 if (block->type == FZ_STEXT_BLOCK_TEXT) {
                     for (fz_stext_line* line = block->u.t.first_line; line; line = line->next) {
                         for (fz_stext_char* ch = line->first_char; ch; ch = ch->next) {
-                            data.text += static_cast<char>(ch->c);
-                            data.char_bboxes.push_back(fz_rect_from_quad(ch->quad));
+                            int code = ch->c;
+                            fz_rect r = fz_rect_from_quad(ch->quad);
+                            if (code >= 0 && code <= 0x7F) {
+                                data.text.push_back(static_cast<char>(code));
+                                data.char_bboxes.push_back(r);
+                            } else if (code >= 0x80 && code <= 0x7FF) {
+                                data.text.push_back(static_cast<char>(0xC0 | ((code >> 6) & 0x1F)));
+                                data.text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                                data.char_bboxes.push_back(r);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                            } else if (code >= 0x800 && code <= 0xFFFF) {
+                                if (code >= 0xD800 && code <= 0xDFFF) {
+                                    data.text.append("\xEF\xBF\xBD", 3);
+                                    data.char_bboxes.push_back(r);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                } else {
+                                    data.text.push_back(static_cast<char>(0xE0 | ((code >> 12) & 0x0F)));
+                                    data.text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                                    data.text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                                    data.char_bboxes.push_back(r);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                    data.char_bboxes.push_back(fz_empty_rect);
+                                }
+                            } else if (code >= 0x10000 && code <= 0x10FFFF) {
+                                data.text.push_back(static_cast<char>(0xF0 | ((code >> 18) & 0x07)));
+                                data.text.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+                                data.text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                                data.text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                                data.char_bboxes.push_back(r);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                            } else {
+                                data.text.append("\xEF\xBF\xBD", 3);
+                                data.char_bboxes.push_back(r);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                                data.char_bboxes.push_back(fz_empty_rect);
+                            }
                         }
                         data.text += ' ';
                         data.char_bboxes.push_back(fz_empty_rect);
@@ -135,6 +174,7 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
                 }
             }
         }
+
     } fz_catch(c) {
         throw std::runtime_error(std::string("ExtractPageText error: ") + fz_caught_message(c));
     }
@@ -340,4 +380,117 @@ std::string MuPDFWrapper::GetRedactedPdf() const {
         throw std::runtime_error(std::string("GetRedactedPdf error: ") + fz_caught_message(c));
     }
     return redacted_pdf_data;
+}
+
+int MuPDFWrapper::CountIntersectingGlyphs(const std::string& redacted_pdf_bytes, const std::vector<fz_rect>& boxes, int page_index) const {
+    if (boxes.empty() || redacted_pdf_bytes.empty()) return 0;
+    fz_context* vctx = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
+    if (!vctx) throw std::runtime_error("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs: fz_new_context failed");
+    int surviving = 0;
+    fz_try(vctx) {
+        fz_register_document_handlers(vctx);
+        fz_stream* vstream = fz_open_memory(vctx, reinterpret_cast<const unsigned char*>(redacted_pdf_bytes.data()), redacted_pdf_bytes.size());
+        fz_document* vdoc = nullptr;
+        fz_try(vctx) {
+            vdoc = fz_open_document_with_stream(vctx, "pdf", vstream);
+        } fz_always(vctx) {
+            fz_drop_stream(vctx, vstream);
+        } fz_catch(vctx) {
+            fz_drop_context(vctx);
+            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs open: ") + fz_caught_message(vctx));
+        }
+        int vpage_count = 0;
+        fz_try(vctx) {
+            vpage_count = fz_count_pages(vctx, vdoc);
+        } fz_catch(vctx) {
+            fz_drop_document(vctx, vdoc);
+            fz_drop_context(vctx);
+            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs count: ") + fz_caught_message(vctx));
+        }
+        if (page_index < 0 || page_index >= vpage_count) {
+            fz_drop_document(vctx, vdoc);
+            fz_drop_context(vctx);
+            throw std::out_of_range("CountIntersectingGlyphs page_index out of range");
+        }
+        fz_page* vpage = nullptr;
+        fz_stext_page* stext = nullptr;
+        fz_try(vctx) {
+            vpage = fz_load_page(vctx, vdoc, page_index);
+            if (!vpage) fz_throw(vctx, FZ_ERROR_GENERIC, "Failed to load page for verification");
+            fz_stext_options opts = {0};
+            stext = fz_new_stext_page_from_page(vctx, vpage, &opts);
+            if (stext) {
+                for (auto block_it = fz_stext_page_block_iterator_begin(stext); block_it.block != nullptr; block_it = fz_stext_page_block_iterator_next(block_it)) {
+                    fz_stext_block* block = block_it.block;
+                    if (block->type != FZ_STEXT_BLOCK_TEXT) continue;
+                    for (fz_stext_line* line = block->u.t.first_line; line; line = line->next) {
+                        for (fz_stext_char* ch = line->first_char; ch; ch = ch->next) {
+                            if (ch->c < 32 || ch->c > 126) continue;
+                            fz_rect qr = fz_rect_from_quad(ch->quad);
+                            if (fz_is_empty_rect(qr)) continue;
+                            for (const auto& box : boxes) {
+                                if (fz_is_empty_rect(box)) continue;
+                                fz_rect isect = fz_intersect_rect(qr, box);
+                                if (!fz_is_empty_rect(isect)) { surviving++; break; }
+                            }
+                        }
+                    }
+                }
+            }
+        } fz_always(vctx) {
+            if (stext) fz_drop_stext_page(vctx, stext);
+            if (vpage) fz_drop_page(vctx, vpage);
+            fz_drop_document(vctx, vdoc);
+        } fz_catch(vctx) {
+            fz_drop_context(vctx);
+            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs re-extract: ") + fz_caught_message(vctx));
+        }
+        fz_drop_context(vctx);
+    } fz_catch(vctx) {
+        throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs outer: ") + fz_caught_message(vctx));
+    }
+    return surviving;
+}
+
+int MuPDFWrapper::CountPlaintextOccurrences(const std::string& redacted_pdf_bytes, const std::vector<std::string>& plaintexts) const {
+    if (plaintexts.empty() || redacted_pdf_bytes.empty()) return 0;
+    int total = 0;
+    for (const auto& pt : plaintexts) {
+        if (pt.empty()) continue;
+        size_t pos = 0;
+        while ((pos = redacted_pdf_bytes.find(pt, pos)) != std::string::npos) { total++; pos += pt.size(); }
+    }
+    return total;
+}
+
+void MuPDFWrapper::VerifyPostRedaction(const std::string& redacted_pdf_bytes,
+                                       const std::map<int, std::vector<fz_rect>>& per_page_boxes,
+                                       const std::vector<std::string>& target_plaintexts,
+                                       const std::string& job_id,
+                                       const std::string& traceparent) const {
+    if (per_page_boxes.empty() && target_plaintexts.empty()) return;
+    int total_surviving_glyphs = 0;
+    int failing_page = -1;
+    fz_rect failing_box = fz_empty_rect;
+    for (const auto& [page_idx, boxes] : per_page_boxes) {
+        if (boxes.empty()) continue;
+        int cnt = CountIntersectingGlyphs(redacted_pdf_bytes, boxes, page_idx);
+        if (cnt > 0) {
+            total_surviving_glyphs += cnt;
+            if (failing_page == -1) { failing_page = page_idx; failing_box = boxes.front(); }
+        }
+    }
+    int total_surviving_bytes = CountPlaintextOccurrences(redacted_pdf_bytes, target_plaintexts);
+    if (total_surviving_glyphs > 0 || total_surviving_bytes > 0) {
+        std::string token_hash;
+        if (!target_plaintexts.empty() && !target_plaintexts.front().empty()) {
+            const auto& pt = target_plaintexts.front();
+            token_hash = std::string(1, pt.front()) + "***" + std::string(1, pt.back()) + ":" + std::to_string(pt.size());
+        } else token_hash = "n/a";
+        std::string tp = traceparent.empty() ? "n/a" : traceparent;
+        spdlog::critical("[SEAM: LINEAGE_GAP] job_id={} page_index={} box=[{},{},{},{}] surviving_glyph_count={} surviving_byte_count={} token_hash={} traceparent={}",
+                         job_id, failing_page, failing_box.x0, failing_box.y0, failing_box.x1, failing_box.y1,
+                         total_surviving_glyphs, total_surviving_bytes, token_hash, tp);
+        throw std::runtime_error("[SEAM: LINEAGE_GAP] Post-redaction verification failed: surviving_glyph_count=" + std::to_string(total_surviving_glyphs) + " surviving_byte_count=" + std::to_string(total_surviving_bytes) + " job_id=" + job_id + " page_index=" + std::to_string(failing_page));
+    }
 }
