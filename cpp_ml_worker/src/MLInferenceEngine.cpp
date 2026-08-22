@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <map>
 #include <tuple>
+#include <mdspan>
 #include <onnxruntime_cxx_api.h>
 #include <ranges>
 #include "tokenizers_cpp/tokenizers_cpp.h"
@@ -200,6 +201,18 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
         std::vector<int64_t> attention_mask(input_ids.size(), 1);
 
         auto spans = doc_processor::SpanGenerator::Generate(window_word_count, 12);
+        // mdspan validation for window tensors per MPL-312 §5.4
+        {
+            auto input_ids_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(input_ids.data(), 1, input_ids.size());
+            auto words_mask_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(words_mask.data(), 1, words_mask.size());
+            auto attn_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(attention_mask.data(), 1, attention_mask.size());
+            if (input_ids_md.extent(1) != input_ids.size() || words_mask_md.extent(1) != words_mask.size() || attn_md.extent(1) != attention_mask.size()) {
+                throw std::runtime_error("window mdspan extent mismatch");
+            }
+            if (input_ids.size() != words_mask.size() || input_ids.size() != attention_mask.size()) {
+                throw std::runtime_error("window tensor length mismatch");
+            }
+        }
 
         std::vector<float> logits = onnx_runner_->RunInference(
             input_ids,
@@ -212,21 +225,29 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
 
         if (!logits.empty()) {
             size_t num_classes = dynamic_labels.size();
-            for (size_t k = 0; k < window_word_count; ++k) {
-                for (size_t l = 0; l < 12; ++l) {
-                    if (k + l >= window_word_count) continue;
-                    for (size_t c = 0; c < num_classes; ++c) {
-                        size_t idx = (k * 12 + l) * num_classes + c;
-                        if (idx < logits.size()) {
-                            float logit = logits[idx];
-                            float conf = 1.0f / (1.0f + std::exp(-logit));
-                            if (conf >= threshold) {
-                                CandidateKey key{window_start + k, window_start + k + l, dynamic_labels[c]};
-                                auto it = candidate_map.find(key);
-                                if (it == candidate_map.end() || conf > it->second) {
-                                    candidate_map[key] = conf;
-                                }
-                            }
+            // mdspan tensor views per MPL-312 §5.5 — layout_right row-major, zero extra copy
+            auto logits_md = std::mdspan<const float, std::extents<size_t, std::dynamic_extent, std::dynamic_extent>>(
+                logits.data(), spans.num_spans, num_classes);
+            auto span_idx_md = spans.span_idx();
+            auto span_mask_span = spans.span_mask();
+            if (logits_md.extent(0) != spans.num_spans || logits_md.extent(1) != num_classes) {
+                throw std::runtime_error("logits mdspan extent mismatch: logits " + std::to_string(logits.size()) + " vs spans " + std::to_string(spans.num_spans) + " * classes " + std::to_string(num_classes));
+            }
+            if (span_idx_md.extent(0) != spans.num_spans || span_idx_md.extent(1) != 2) {
+                throw std::runtime_error("span_idx mdspan extent mismatch");
+            }
+            for (size_t span = 0; span < logits_md.extent(0); ++span) {
+                if (span < span_mask_span.size() && span_mask_span[span] == 0) continue;
+                size_t start_word = static_cast<size_t>(span_idx_md[span, 0]);
+                size_t end_word = static_cast<size_t>(span_idx_md[span, 1]);
+                for (size_t c = 0; c < logits_md.extent(1); ++c) {
+                    float logit = logits_md[span, c];
+                    float conf = 1.0f / (1.0f + std::exp(-logit));
+                    if (conf >= threshold) {
+                        CandidateKey key{window_start + start_word, window_start + end_word, dynamic_labels[c]};
+                        auto it = candidate_map.find(key);
+                        if (it == candidate_map.end() || conf > it->second) {
+                            candidate_map[key] = conf;
                         }
                     }
                 }
@@ -392,6 +413,21 @@ namespace {
             const doc_processor::GeneratedSpans& spans
         ) override {
             if (input_ids.empty() || num_words == 0 || num_classes == 0) return {};
+            // mdspan extent validation per MPL-312 §5.4 — layout_right, zero extra copy
+            {
+                auto input_ids_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(input_ids.data(), 1, input_ids.size());
+                auto words_mask_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(words_mask.data(), 1, words_mask.size());
+                auto span_idx_md = spans.span_idx();
+                if (input_ids_md.extent(1) != input_ids.size() || words_mask_md.extent(1) != words_mask.size()) {
+                    throw std::invalid_argument("mdspan extent mismatch for input_ids/words_mask vs seq_len");
+                }
+                if (span_idx_md.extent(0) != spans.num_spans || span_idx_md.extent(1) != 2) {
+                    throw std::invalid_argument("span_idx mdspan extent mismatch");
+                }
+                if (spans.span_mask().size() != spans.num_spans) {
+                    throw std::invalid_argument("span_mask size mismatch");
+                }
+            }
 
             Ort::AllocatorWithDefaultOptions allocator;
             

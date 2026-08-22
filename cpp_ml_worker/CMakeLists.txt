@@ -3,6 +3,12 @@ project(cpp_ml_worker)
 
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Probe <mdspan> per MPL-312 §5.8 — no polyfill
+include(CheckIncludeFileCXX)
+check_include_file_cxx("mdspan" HAVE_MDSPAN)
+if(NOT HAVE_MDSPAN)
+  message(FATAL_ERROR "C++26 <mdspan> not found — requires GCC 14+ or Clang 17+ with -std=c++26")
+endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out)
 
