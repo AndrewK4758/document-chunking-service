@@ -176,3 +176,91 @@ TEST(SpatialLayoutAnalyzerTest, AnalyzePageLayout_WithTextContent) {
     fz_drop_document(ctx, doc);
     fz_drop_context(ctx);
 }
+
+TEST(SpatialLayoutAnalyzerTest, RaycastAdjacentValue_HorizontalRight_FindsAdjacentValue) {
+    WordSpan header_span{"PRE-PAYMENT PENALTY", 0, 20, fz_rect{50.0f, 100.0f, 250.0f, 120.0f}};
+    WordSpan value_span{"NO", 21, 23, fz_rect{260.0f, 102.0f, 280.0f, 118.0f}};
+    WordSpan other_span{"OTHER", 24, 29, fz_rect{50.0f, 200.0f, 100.0f, 220.0f}};
+
+    std::vector<WordSpan> words = {header_span, value_span, other_span};
+
+    KeyValueMatch match = SpatialLayoutAnalyzer::RaycastAdjacentValue(
+        words,
+        header_span.bbox,
+        RayDirection::HorizontalRight,
+        500.0f,
+        25.0f
+    );
+
+    EXPECT_TRUE(match.found);
+    EXPECT_EQ(match.value_text, "NO");
+    EXPECT_FLOAT_EQ(match.value_box.x0, 260.0f);
+    EXPECT_FLOAT_EQ(match.value_box.x1, 280.0f);
+    EXPECT_FLOAT_EQ(match.composite_box.x0, 50.0f);
+    EXPECT_FLOAT_EQ(match.composite_box.x1, 280.0f);
+}
+
+TEST(SpatialLayoutAnalyzerTest, RaycastAdjacentValue_VerticalDown_FindsAdjacentValue) {
+    WordSpan header_span{"MONTHLY PAYMENT", 0, 15, fz_rect{100.0f, 100.0f, 200.0f, 120.0f}};
+    WordSpan val1{"$", 16, 17, fz_rect{100.0f, 130.0f, 110.0f, 150.0f}};
+    WordSpan val2{"1,187.71", 18, 26, fz_rect{112.0f, 130.0f, 160.0f, 150.0f}};
+
+    std::vector<WordSpan> words = {header_span, val1, val2};
+
+    KeyValueMatch match = SpatialLayoutAnalyzer::RaycastAdjacentValue(
+        words,
+        header_span.bbox,
+        RayDirection::VerticalDown,
+        100.0f,
+        25.0f
+    );
+
+    EXPECT_TRUE(match.found);
+    EXPECT_EQ(match.value_text, "$ 1,187.71");
+    EXPECT_FLOAT_EQ(match.value_box.x0, 100.0f);
+    EXPECT_FLOAT_EQ(match.value_box.x1, 160.0f);
+    EXPECT_FLOAT_EQ(match.value_box.y0, 130.0f);
+    EXPECT_FLOAT_EQ(match.value_box.y1, 150.0f);
+}
+
+TEST(SpatialLayoutAnalyzerTest, RaycastAdjacentValue_NoMatch_ReturnsFoundFalse) {
+    WordSpan header_span{"HEADER", 0, 6, fz_rect{50.0f, 100.0f, 150.0f, 120.0f}};
+    WordSpan faraway_span{"FAR", 7, 10, fz_rect{500.0f, 500.0f, 550.0f, 520.0f}};
+
+    std::vector<WordSpan> words = {header_span, faraway_span};
+
+    KeyValueMatch match = SpatialLayoutAnalyzer::RaycastAdjacentValue(
+        words,
+        header_span.bbox,
+        RayDirection::HorizontalRight,
+        200.0f,
+        25.0f
+    );
+
+    EXPECT_FALSE(match.found);
+    EXPECT_TRUE(match.value_text.empty());
+}
+
+TEST(SpatialLayoutAnalyzerTest, RaycastAdjacentValue_ClusteringIntraWordGap) {
+    WordSpan header{"BALLOON PAYMENT", 0, 15, fz_rect{50.0f, 100.0f, 200.0f, 120.0f}};
+    WordSpan word1{"NO", 16, 18, fz_rect{210.0f, 100.0f, 230.0f, 120.0f}};
+    WordSpan word2{"(SEE", 19, 23, fz_rect{235.0f, 100.0f, 270.0f, 120.0f}};
+    WordSpan word3{"ATTACHED)", 24, 33, fz_rect{275.0f, 100.0f, 340.0f, 120.0f}};
+    // Far away word (> 25pt gap)
+    WordSpan far_word{"DISCLOSURE", 34, 45, fz_rect{400.0f, 100.0f, 480.0f, 120.0f}};
+
+    std::vector<WordSpan> words = {header, word1, word2, word3, far_word};
+
+    KeyValueMatch match = SpatialLayoutAnalyzer::RaycastAdjacentValue(
+        words,
+        header.bbox,
+        RayDirection::HorizontalRight,
+        500.0f,
+        25.0f
+    );
+
+    EXPECT_TRUE(match.found);
+    EXPECT_EQ(match.value_text, "NO (SEE ATTACHED)");
+    EXPECT_FLOAT_EQ(match.value_box.x0, 210.0f);
+    EXPECT_FLOAT_EQ(match.value_box.x1, 340.0f);
+}

@@ -24,6 +24,7 @@ public:
     ~MuPDFWrapper();
 
     [[nodiscard]] int GetPageCount() const;
+    [[nodiscard]] int GetPageRotation(int page_index) const;
     [[nodiscard]] PageTextData ExtractPageText(int page_index) const;
     
     // Single-page redaction with native fz_rect coordinates

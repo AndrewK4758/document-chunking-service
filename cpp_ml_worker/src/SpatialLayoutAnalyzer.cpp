@@ -135,4 +135,99 @@ LayoutFeatures SpatialLayoutAnalyzer::AnalyzePageLayout(
     return features;
 }
 
+KeyValueMatch SpatialLayoutAnalyzer::RaycastAdjacentValue(
+    std::span<const WordSpan> words,
+    const fz_rect& key_box,
+    RayDirection direction,
+    float max_distance,
+    float corridor_tolerance
+) {
+    if (words.empty() || fz_is_empty_rect(key_box)) {
+        return {};
+    }
+
+    // Corridor raycasting filter
+    std::vector<const WordSpan*> candidates;
+    for (const auto& w : words) {
+        if (fz_is_empty_rect(w.bbox)) continue;
+
+        if (direction == RayDirection::HorizontalRight) {
+            // Horizontal corridor: vertical overlap with key_box within corridor_tolerance
+            float v_overlap_min = std::max(w.bbox.y0, key_box.y0 - corridor_tolerance);
+            float v_overlap_max = std::min(w.bbox.y1, key_box.y1 + corridor_tolerance);
+            if (v_overlap_min < v_overlap_max) {
+                // Must be to the right of key_box
+                float dx = w.bbox.x0 - key_box.x1;
+                if (dx >= -5.0f && dx <= max_distance) {
+                    candidates.push_back(&w);
+                }
+            }
+        } else if (direction == RayDirection::VerticalDown) {
+            // Vertical corridor: horizontal overlap with key_box within corridor_tolerance
+            float h_overlap_min = std::max(w.bbox.x0, key_box.x0 - corridor_tolerance);
+            float h_overlap_max = std::min(w.bbox.x1, key_box.x1 + corridor_tolerance);
+            if (h_overlap_min < h_overlap_max) {
+                // Must be below key_box
+                float dy = w.bbox.y0 - key_box.y1;
+                if (dy >= -5.0f && dy <= max_distance) {
+                    candidates.push_back(&w);
+                }
+            }
+        }
+    }
+
+    if (candidates.empty()) {
+        return {};
+    }
+
+    // Sort candidates in reading/proximity order
+    if (direction == RayDirection::HorizontalRight) {
+        std::sort(candidates.begin(), candidates.end(), [](const WordSpan* a, const WordSpan* b) {
+            return a->bbox.x0 < b->bbox.x0;
+        });
+    } else {
+        std::sort(candidates.begin(), candidates.end(), [](const WordSpan* a, const WordSpan* b) {
+            return a->bbox.y0 < b->bbox.y0;
+        });
+    }
+
+    // Cluster contiguous sequence of value words
+    std::vector<const WordSpan*> cluster;
+    cluster.push_back(candidates[0]);
+
+    for (size_t i = 1; i < candidates.size(); ++i) {
+        const auto* prev = cluster.back();
+        const auto* curr = candidates[i];
+
+        if (direction == RayDirection::HorizontalRight) {
+            float gap = curr->bbox.x0 - prev->bbox.x1;
+            if (gap <= corridor_tolerance) {
+                cluster.push_back(curr);
+            } else {
+                break;
+            }
+        } else {
+            float gap = curr->bbox.y0 - prev->bbox.y1;
+            if (gap <= corridor_tolerance) {
+                cluster.push_back(curr);
+            } else {
+                break;
+            }
+        }
+    }
+
+    KeyValueMatch match;
+    match.found = true;
+    match.value_box = cluster[0]->bbox;
+    match.value_text = cluster[0]->text;
+
+    for (size_t i = 1; i < cluster.size(); ++i) {
+        match.value_box = fz_union_rect(match.value_box, cluster[i]->bbox);
+        match.value_text += " " + cluster[i]->text;
+    }
+
+    match.composite_box = fz_union_rect(key_box, match.value_box);
+    return match;
+}
+
 } // namespace doc_processor

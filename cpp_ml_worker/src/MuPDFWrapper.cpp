@@ -36,6 +36,27 @@ int MuPDFWrapper::GetPageCount() const {
     return count;
 }
 
+int MuPDFWrapper::GetPageRotation(int page_index) const {
+    int page_count = GetPageCount();
+    if (page_index < 0 || page_index >= page_count) {
+        throw std::out_of_range("page_index out of range");
+    }
+    int rotation = 0;
+    fz_try(ctx_) {
+        pdf_document* pdoc = pdf_document_from_fz_document(ctx_, doc_);
+        if (pdoc) {
+            pdf_obj* page_obj = pdf_lookup_page_obj(ctx_, pdoc, page_index);
+            if (page_obj) {
+                rotation = pdf_dict_get_int(ctx_, page_obj, PDF_NAME(Rotate));
+            }
+        }
+    } fz_catch(ctx_) {
+        throw std::runtime_error(std::string("GetPageRotation error: ") + fz_caught_message(ctx_));
+    }
+    rotation = ((rotation % 360) + 360) % 360;
+    return rotation;
+}
+
 PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
     int page_count = GetPageCount();
     if (page_index < 0 || page_index >= page_count) {
@@ -192,6 +213,10 @@ std::string MuPDFWrapper::GetRedactedPdf() const {
         fz_output* out = fz_new_output_with_buffer(ctx_, buf);
         
         pdf_write_options write_opts = {0};
+        write_opts.do_clean = 1;
+        write_opts.do_sanitize = 1;
+        write_opts.do_garbage = 3;
+        write_opts.do_compress = 1;
         pdf_write_document(ctx_, pdf_document_from_fz_document(ctx_, doc_), out, &write_opts);
         fz_close_output(ctx_, out);
         fz_drop_output(ctx_, out);

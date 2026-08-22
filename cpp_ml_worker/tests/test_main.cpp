@@ -279,6 +279,260 @@ TEST(WorkerTests, MuPDFWrapper_ApplyNormalizedRedactions_MultiPageAndValidation)
     EXPECT_THROW(mupdf.ApplyNormalizedRedactions(bad_boxes), std::out_of_range);
 }
 
+TEST(WorkerTests, MuPDFWrapper_GetPageRotation_StandardAndRotated) {
+    const std::string standard_pdf = 
+        "%PDF-1.4\n"
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >> endobj\n"
+        "xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n"
+        "trailer << /Size 4 /Root 1 0 R >>\nstartxref\n190\n%%EOF\n";
+
+    MuPDFWrapper standard_mupdf(standard_pdf);
+    EXPECT_EQ(standard_mupdf.GetPageRotation(0), 0);
+
+    const std::string rotated_pdf = 
+        "%PDF-1.4\n"
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90 >> endobj\n"
+        "xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n"
+        "trailer << /Size 4 /Root 1 0 R >>\nstartxref\n202\n%%EOF\n";
+
+    MuPDFWrapper rotated_mupdf(rotated_pdf);
+    EXPECT_EQ(rotated_mupdf.GetPageRotation(0), 90);
+    EXPECT_THROW((void)rotated_mupdf.GetPageRotation(-1), std::out_of_range);
+    EXPECT_THROW((void)rotated_mupdf.GetPageRotation(5), std::out_of_range);
+}
+
+TEST(WorkerTests, MuPDFWrapper_ApplyNormalizedRedactions_RotatedPageTextErasure) {
+    const std::string rotated_text_pdf = 
+        "%PDF-1.4\n"
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90 /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
+        "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+        "5 0 obj << /Length 50 >> stream\n"
+        "BT\n/F1 12 Tf\n50 700 Td\n(RotatedSecret) Tj\nET\n"
+        "endstream\nendobj\n"
+        "xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000247 00000 n \n0000000318 00000 n \n"
+        "trailer << /Size 6 /Root 1 0 R >>\nstartxref\n443\n%%EOF\n";
+
+    MuPDFWrapper mupdf(rotated_text_pdf);
+    EXPECT_EQ(mupdf.GetPageRotation(0), 90);
+
+    auto [initial_text, char_bboxes] = mupdf.ExtractPageText(0);
+    EXPECT_NE(initial_text.find("RotatedSecret"), std::string::npos);
+
+    // Apply normalized redaction box over full visual page
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0(0.0f);
+    box.set_y0(0.0f);
+    box.set_x1(1.0f);
+    box.set_y1(1.0f);
+
+    std::vector<ml::worker::v1::NormalizedRedactionBox> boxes = {box};
+    mupdf.ApplyNormalizedRedactions(boxes);
+
+    std::string redacted_pdf_bytes = mupdf.GetRedactedPdf();
+    EXPECT_GT(redacted_pdf_bytes.size(), 0);
+
+    MuPDFWrapper redacted_mupdf(redacted_pdf_bytes);
+    auto [after_text, after_bboxes] = redacted_mupdf.ExtractPageText(0);
+    EXPECT_EQ(after_text.find("RotatedSecret"), std::string::npos);
+}
+
+namespace {
+    class MultiSubtokenMockTokenizer : public ITokenizer {
+    public:
+        std::vector<int32_t> Encode(const std::string& text) override {
+            if (text == "first") return {10};
+            if (text == "multi") return {20, 21, 22};
+            if (text == "third") return {30};
+            return {100};
+        }
+        std::string Decode(const std::vector<int32_t>& ids) override { return ""; }
+    };
+
+    class RecordingMockOnnxRunner : public IOnnxRunner {
+    public:
+        std::vector<std::vector<int64_t>> captured_input_ids;
+        std::vector<std::vector<int64_t>> captured_words_masks;
+        std::vector<size_t> captured_num_words;
+
+        std::vector<float> RunInference(
+            const std::vector<int64_t>& input_ids,
+            const std::vector<int64_t>& attention_mask,
+            const std::vector<int64_t>& words_mask,
+            size_t num_words,
+            size_t num_classes,
+            const doc_processor::GeneratedSpans& spans
+        ) override {
+            captured_input_ids.push_back(input_ids);
+            captured_words_masks.push_back(words_mask);
+            captured_num_words.push_back(num_words);
+            return std::vector<float>(num_words * 12 * num_classes, -10.0f);
+        }
+    };
+
+    class SingleSpanOnnxRunner : public IOnnxRunner {
+    public:
+        size_t target_word_start = 0;
+        size_t target_span_len = 1;
+        float target_confidence = 10.0f;
+
+        std::vector<float> RunInference(
+            const std::vector<int64_t>& input_ids,
+            const std::vector<int64_t>& attention_mask,
+            const std::vector<int64_t>& words_mask,
+            size_t num_words,
+            size_t num_classes,
+            const doc_processor::GeneratedSpans& spans
+        ) override {
+            size_t total = num_words * 12 * num_classes;
+            std::vector<float> logits(total, -10.0f);
+            if (target_word_start < num_words && target_span_len <= 12 && num_classes > 0) {
+                size_t l = target_span_len - 1;
+                size_t idx = (target_word_start * 12 + l) * num_classes + 0;
+                if (idx < logits.size()) {
+                    logits[idx] = target_confidence;
+                }
+            }
+            return logits;
+        }
+    };
+}
+
+TEST(WorkerTests, WordsMask_1BasedSequentialAndSubtokenMasking) {
+    auto tokenizer = std::make_unique<MultiSubtokenMockTokenizer>();
+    auto runner_ptr = std::make_unique<RecordingMockOnnxRunner>();
+    auto* runner = runner_ptr.get();
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    const std::string text = "first multi third";
+    std::vector<fz_rect> char_bboxes(text.size(), fz_rect{0, 0, 10, 10});
+    std::vector<std::string> labels = {"TestLabel"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    ASSERT_EQ(runner->captured_words_masks.size(), 1);
+    const auto& mask = runner->captured_words_masks[0];
+    const auto& ids = runner->captured_input_ids[0];
+
+    ASSERT_EQ(mask.size(), ids.size());
+    ASSERT_GE(mask.size(), 4 + 1 + 3 + 1 + 1);
+    EXPECT_EQ(mask[0], 0);
+    EXPECT_EQ(mask[1], 0);
+    EXPECT_EQ(mask[2], 0);
+    EXPECT_EQ(mask[3], 0);
+    EXPECT_EQ(mask[4], 1);
+    EXPECT_EQ(mask[5], 2);
+    EXPECT_EQ(mask[6], 0);
+    EXPECT_EQ(mask[7], 0);
+    EXPECT_EQ(mask[8], 3);
+    EXPECT_EQ(mask[9], 0);
+}
+
+TEST(WorkerTests, WordsMask_SlidingWindowRelativeReset) {
+    auto tokenizer = std::make_unique<MultiSubtokenMockTokenizer>();
+    auto runner_ptr = std::make_unique<RecordingMockOnnxRunner>();
+    auto* runner = runner_ptr.get();
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    std::string text;
+    for (int i = 0; i < 400; ++i) {
+        text += "word ";
+    }
+    std::vector<fz_rect> char_bboxes(text.size(), fz_rect{0, 0, 10, 10});
+    std::vector<std::string> labels = {"TestLabel"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    ASSERT_EQ(runner->captured_words_masks.size(), 2);
+    const auto& mask1 = runner->captured_words_masks[0];
+    EXPECT_EQ(runner->captured_num_words[0], 384);
+    EXPECT_EQ(mask1[4], 1);
+    EXPECT_EQ(mask1[4 + 383], 384);
+
+    const auto& mask2 = runner->captured_words_masks[1];
+    EXPECT_EQ(runner->captured_num_words[1], 80);
+    EXPECT_EQ(mask2[4], 1);
+    EXPECT_EQ(mask2[4 + 79], 80);
+}
+
+TEST(WorkerTests, PunctuationAwareTokenization_PunctuationAndSymbols) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<RecordingMockOnnxRunner>();
+    auto* runner = runner_ptr.get();
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    const std::string text = "$125,000 and 9.775% (pre-payment)";
+    std::vector<fz_rect> char_bboxes;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char_bboxes.push_back(fz_rect{static_cast<float>(i * 10), 0.0f, static_cast<float>((i + 1) * 10), 20.0f});
+    }
+    std::vector<std::string> labels = {"Amount"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 1000.0f, 500.0f);
+
+    ASSERT_EQ(runner->captured_num_words.size(), 1);
+    EXPECT_EQ(runner->captured_num_words[0], 12);
+}
+
+TEST(WorkerTests, PunctuationAwareTokenization_ExactGlyphBoundingBoxes) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<SingleSpanOnnxRunner>();
+    runner_ptr->target_word_start = 0;
+    runner_ptr->target_span_len = 1;
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    const std::string text = "$125,000";
+    std::vector<fz_rect> char_bboxes;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char_bboxes.push_back(fz_rect{static_cast<float>(i * 10), 5.0f, static_cast<float>((i + 1) * 10), 25.0f});
+    }
+    std::vector<std::string> labels = {"CurrencySymbol"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    ASSERT_EQ(spans.size(), 1);
+    EXPECT_EQ(spans[0].text(), "$");
+    EXPECT_FLOAT_EQ(spans[0].x0(), 0.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].x1(), 10.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].y0(), 5.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].y1(), 25.0f / 100.0f);
+}
+
+TEST(WorkerTests, PunctuationAwareTokenization_MultiTokenSpanBoundingUnion) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<SingleSpanOnnxRunner>();
+    runner_ptr->target_word_start = 0;
+    runner_ptr->target_span_len = 4;
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    const std::string text = "$125,000";
+    std::vector<fz_rect> char_bboxes;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char_bboxes.push_back(fz_rect{static_cast<float>(i * 10), 10.0f, static_cast<float>((i + 1) * 10), 30.0f});
+    }
+    std::vector<std::string> labels = {"LoanAmount"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 100.0f, 100.0f);
+
+    ASSERT_EQ(spans.size(), 1);
+    EXPECT_EQ(spans[0].text(), "$125,000");
+    EXPECT_FLOAT_EQ(spans[0].x0(), 0.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].x1(), 80.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].y0(), 10.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].y1(), 30.0f / 100.0f);
+}
+
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

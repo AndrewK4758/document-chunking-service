@@ -33,6 +33,25 @@ struct LayoutFeatures {
     std::vector<NormalizedBox> header_bboxes;
 };
 
+struct WordSpan {
+    std::string text;
+    size_t start{0};
+    size_t end{0};
+    fz_rect bbox{fz_empty_rect};
+};
+
+enum class RayDirection {
+    HorizontalRight,
+    VerticalDown
+};
+
+struct KeyValueMatch {
+    bool found{false};
+    fz_rect value_box{fz_empty_rect};
+    fz_rect composite_box{fz_empty_rect};
+    std::string value_text;
+};
+
 class SpatialLayoutAnalyzer {
 public:
     SpatialLayoutAnalyzer() = default;
@@ -46,6 +65,14 @@ public:
         int page_number,
         float page_width,
         float page_height
+    );
+
+    [[nodiscard]] static KeyValueMatch RaycastAdjacentValue(
+        std::span<const WordSpan> words,
+        const fz_rect& key_box,
+        RayDirection direction = RayDirection::HorizontalRight,
+        float max_distance = 300.0f,
+        float corridor_tolerance = 25.0f
     );
 };
 

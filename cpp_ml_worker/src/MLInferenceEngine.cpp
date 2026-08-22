@@ -99,10 +99,15 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
 
     float threshold = ResolveConfidenceThreshold(threshold_override);
 
-    // 1. Extract words and corresponding bounding boxes
+    // 1. Extract words and corresponding bounding boxes using punctuation-aware tokenization (\w+(?:[-_]\w+)*|\S)
     std::vector<WordSpan> words;
     size_t n = text.size();
     size_t char_pos = 0;
+
+    auto is_word_char = [](char c) -> bool {
+        unsigned char uc = static_cast<unsigned char>(c);
+        return std::isalnum(uc) || uc == '_' || uc >= 0x80;
+    };
 
     while (char_pos < n) {
         while (char_pos < n && (std::isspace(static_cast<unsigned char>(text[char_pos])) || text[char_pos] == '\n' || text[char_pos] == '\r')) {
@@ -111,7 +116,18 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
         if (char_pos >= n) break;
 
         size_t start = char_pos;
-        while (char_pos < n && !std::isspace(static_cast<unsigned char>(text[char_pos])) && text[char_pos] != '\n' && text[char_pos] != '\r') {
+        if (is_word_char(text[char_pos])) {
+            while (char_pos < n) {
+                if (is_word_char(text[char_pos])) {
+                    char_pos++;
+                } else if ((text[char_pos] == '-' || text[char_pos] == '_') &&
+                           char_pos + 1 < n && is_word_char(text[char_pos + 1])) {
+                    char_pos += 2;
+                } else {
+                    break;
+                }
+            }
+        } else {
             char_pos++;
         }
         size_t end = char_pos;
@@ -163,15 +179,17 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
         for (size_t wi = window_start; wi < window_end; ++wi) {
             const auto& w = words[wi];
             std::vector<int32_t> w_tokens = tokenizer_->Encode(SanitizeUtf8(w.text));
+            int64_t word_idx = static_cast<int64_t>(wi - window_start + 1);
+
             if (w_tokens.empty()) {
                 input_ids.push_back(0);
-                words_mask.push_back(1);
+                words_mask.push_back(word_idx);
             } else {
                 input_ids.push_back(w_tokens[0]);
-                words_mask.push_back(1);
+                words_mask.push_back(word_idx);
                 for (size_t ti = 1; ti < w_tokens.size(); ++ti) {
                     input_ids.push_back(w_tokens[ti]);
-                    words_mask.push_back(2);
+                    words_mask.push_back(0);
                 }
             }
         }
