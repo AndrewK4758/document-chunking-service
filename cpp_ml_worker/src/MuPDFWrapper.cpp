@@ -243,7 +243,7 @@ void MuPDFWrapper::ApplyNormalizedRedactions(
     for (const auto& box : custom_boxes) {
         int page_idx = box.page_number() > 0 ? (box.page_number() - 1) : 0;
         if (page_idx < 0 || page_idx >= total_pages) {
-            throw std::out_of_range("page_number in NormalizedRedactionBox is out of range");
+            throw std::out_of_range("page_number in NormalizedRedactionBox is out of range: " + std::to_string(box.page_number()));
         }
         page_boxes_map[page_idx].push_back(box);
     }
@@ -261,11 +261,13 @@ void MuPDFWrapper::ApplyNormalizedRedactions(
             }
 
             if (pdf_page* ppage = pdf_page_from_fz_page(c, page.get())) {
+                // Sourced exclusively from fz_bound_page visible bounds (anchored at page_bounds.x0/y0)
                 fz_rect page_bounds = fz_bound_page(c, page.get());
                 float page_w = page_bounds.x1 - page_bounds.x0;
                 float page_h = page_bounds.y1 - page_bounds.y0;
 
                 int valid_annots = 0;
+
                 for (const auto& box : boxes) {
                     float rx0 = std::min(box.x0(), box.x1());
                     float rx1 = std::max(box.x0(), box.x1());
@@ -276,16 +278,30 @@ void MuPDFWrapper::ApplyNormalizedRedactions(
                         continue;
                     }
 
-                    fz_rect native_rect;
-                    native_rect.x0 = page_bounds.x0 + std::clamp(rx0, 0.0f, 1.0f) * page_w;
-                    native_rect.x1 = page_bounds.x0 + std::clamp(rx1, 0.0f, 1.0f) * page_w;
-                    native_rect.y0 = page_bounds.y0 + std::clamp(ry0, 0.0f, 1.0f) * page_h;
-                    native_rect.y1 = page_bounds.y0 + std::clamp(ry1, 0.0f, 1.0f) * page_h;
+                    float crx0 = std::clamp(rx0, 0.0f, 1.0f);
+                    float crx1 = std::clamp(rx1, 0.0f, 1.0f);
+                    float cry0 = std::clamp(ry0, 0.0f, 1.0f);
+                    float cry1 = std::clamp(ry1, 0.0f, 1.0f);
+
+                    if (crx0 >= crx1 || cry0 >= cry1) {
+                        continue;
+                    }
+
+                    fz_rect visual_rect;
+                    visual_rect.x0 = page_bounds.x0 + crx0 * page_w;
+                    visual_rect.x1 = page_bounds.x0 + crx1 * page_w;
+                    visual_rect.y0 = page_bounds.y0 + cry0 * page_h;
+                    visual_rect.y1 = page_bounds.y0 + cry1 * page_h;
+
+                    if (fz_is_empty_rect(visual_rect)) {
+                        continue;
+                    }
 
                     pdf_annot* annot = pdf_create_annot(c, ppage, PDF_ANNOT_REDACT);
-                    pdf_set_annot_rect(c, annot, native_rect);
+                    pdf_set_annot_rect(c, annot, visual_rect);
                     pdf_set_annot_color(c, annot, 3, fill_color);
                     valid_annots++;
+
                 }
 
                 if (valid_annots > 0) {
