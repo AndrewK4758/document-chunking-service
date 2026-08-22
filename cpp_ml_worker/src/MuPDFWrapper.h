@@ -39,11 +39,16 @@ public:
 
     [[nodiscard]] std::vector<unsigned char> RenderPagePixmap(int page_index, int dpi = 300) const;
 
+    // Applies redactions given page-coordinate bounding boxes (e.g. from ExtractPageText char_bboxes).
     void ApplyRedactions(int page_index, const std::vector<fz_rect>& bboxes, const float color[3] = nullptr) const;
+
+    // Applies redactions given normalized visual [0.0, 1.0] top-left-origin boxes,
+    // handling rotation, MediaBox/CropBox visible bounds, clamping, and single-pass per-page application.
     void ApplyNormalizedRedactions(
         std::span<const ml::worker::v1::NormalizedRedactionBox> custom_boxes,
         const float color[3] = nullptr
     ) const;
+
 
     [[nodiscard]] std::string GetRedactedPdf() const;
 

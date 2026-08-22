@@ -316,7 +316,8 @@ TEST(WorkerTests, MuPDFWrapper_ApplyNormalizedRedactions_RotatedPageTextErasure)
         "BT\n/F1 12 Tf\n50 700 Td\n(RotatedSecret) Tj\nET\n"
         "endstream\nendobj\n"
         "xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000247 00000 n \n0000000318 00000 n \n"
-        "trailer << /Size 6 /Root 1 0 R >>\nstartxref\n443\n%%EOF\n";
+        "trailer << /Size 6 /Root 1 0 R >>\n"
+        "startxref\n443\n%%EOF\n";
 
     MuPDFWrapper mupdf(rotated_text_pdf);
     EXPECT_EQ(mupdf.GetPageRotation(0), 90);
@@ -342,6 +343,501 @@ TEST(WorkerTests, MuPDFWrapper_ApplyNormalizedRedactions_RotatedPageTextErasure)
     auto [after_text, after_bboxes] = redacted_mupdf.ExtractPageText(0);
     EXPECT_EQ(after_text.find("RotatedSecret"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// MPL-311: Rotation-Aware Spatial Normalization & Y-Axis Inversion Tests
+// ---------------------------------------------------------------------------
+
+namespace {
+    std::string MakeSyntheticCanaryPdf(
+        const std::string& top_text,
+        const std::string& bottom_text,
+        const std::string& mediabox = "[0 0 612 792]",
+        int rotation = 0,
+        float top_y = 720.0f,
+        float bottom_y = 200.0f,
+        float x_pos = 50.0f
+    ) {
+        std::ostringstream ss;
+        ss << "%PDF-1.4\n";
+        ss << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
+        ss << "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
+        ss << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox " << mediabox;
+        if (rotation != 0) {
+            ss << " /Rotate " << rotation;
+        }
+        ss << " /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n";
+        ss << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n";
+
+        std::ostringstream stream_content;
+        stream_content << "BT\n/F1 12 Tf\n";
+        stream_content << x_pos << " " << top_y << " Td\n";
+        stream_content << "(" << top_text << ") Tj\n";
+        stream_content << "0 " << (bottom_y - top_y) << " Td\n";
+        stream_content << "(" << bottom_text << ") Tj\nET\n";
+
+        std::string stream_str = stream_content.str();
+        ss << "5 0 obj << /Length " << stream_str.size() << " >> stream\n";
+        ss << stream_str;
+        ss << "endstream\nendobj\n";
+        ss << "xref\n0 6\n0000000000 65535 f \n";
+        ss << "trailer << /Size 6 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n";
+        return ss.str();
+    }
+
+    std::string MakeSyntheticLeftRightPdf(
+        const std::string& left_text,
+        const std::string& right_text,
+        const std::string& mediabox = "[0 0 612 792]"
+    ) {
+        std::ostringstream ss;
+        ss << "%PDF-1.4\n";
+        ss << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
+        ss << "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
+        ss << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox " << mediabox;
+        ss << " /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n";
+        ss << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n";
+
+        std::ostringstream stream_content;
+        stream_content << "BT\n/F1 12 Tf\n";
+        stream_content << "50 500 Td\n";
+        stream_content << "(" << left_text << ") Tj\n";
+        stream_content << "400 0 Td\n";
+        stream_content << "(" << right_text << ") Tj\nET\n";
+
+        std::string stream_str = stream_content.str();
+        ss << "5 0 obj << /Length " << stream_str.size() << " >> stream\n";
+        ss << stream_str;
+        ss << "endstream\nendobj\n";
+        ss << "xref\n0 6\n0000000000 65535 f \n";
+        ss << "trailer << /Size 6 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n";
+        return ss.str();
+    }
+
+    std::string MakeSyntheticMultiPageMixedRotationPdf() {
+        std::ostringstream ss;
+        ss << "%PDF-1.4\n";
+        ss << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
+        ss << "2 0 obj << /Type /Pages /Kids [3 0 R 6 0 R 8 0 R] /Count 3 >> endobj\n";
+        // Page 1: Rotate 0
+        ss << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n";
+        ss << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n";
+        ss << "5 0 obj << /Length 50 >> stream\nBT\n/F1 12 Tf\n50 700 Td\n(Page1Secret) Tj\nET\nendstream\nendobj\n";
+        // Page 2: Rotate 90
+        ss << "6 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90 /Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >> endobj\n";
+        ss << "7 0 obj << /Length 50 >> stream\nBT\n/F1 12 Tf\n50 700 Td\n(Page2Secret) Tj\nET\nendstream\nendobj\n";
+        // Page 3: Rotate 270
+        ss << "8 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 270 /Resources << /Font << /F1 4 0 R >> >> /Contents 9 0 R >> endobj\n";
+        ss << "9 0 obj << /Length 50 >> stream\nBT\n/F1 12 Tf\n50 700 Td\n(Page3Secret) Tj\nET\nendstream\nendobj\n";
+        ss << "xref\n0 10\n0000000000 65535 f \n";
+        ss << "trailer << /Size 10 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n";
+        return ss.str();
+    }
+}
+
+TEST(MPL311Tests, AC1_YAxisInversion_TopHalfVisualBoxErasesTopTextOnly) {
+    std::string pdf = MakeSyntheticCanaryPdf("TOP_SECRET", "BOTTOM_PUBLIC");
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 1);
+
+    auto [init_text, _] = wrapper.ExtractPageText(0);
+    ASSERT_NE(init_text.find("TOP_SECRET"), std::string::npos);
+    ASSERT_NE(init_text.find("BOTTOM_PUBLIC"), std::string::npos);
+
+    // Top-half visual box: [0.0, 0.0, 1.0, 0.5] in visual top-left space
+    ml::worker::v1::NormalizedRedactionBox top_box;
+    top_box.set_page_number(1);
+    top_box.set_x0(0.0f);
+    top_box.set_y0(0.0f);
+    top_box.set_x1(1.0f);
+    top_box.set_y1(0.5f);
+
+    wrapper.ApplyNormalizedRedactions({&top_box, 1});
+
+    std::string redacted_bytes = wrapper.GetRedactedPdf();
+    MuPDFWrapper redacted_wrapper(redacted_bytes);
+    auto [after_text, __] = redacted_wrapper.ExtractPageText(0);
+
+    // AC-1: TOP_SECRET (visual top) MUST be erased; BOTTOM_PUBLIC MUST be preserved
+    EXPECT_EQ(after_text.find("TOP_SECRET"), std::string::npos);
+    EXPECT_NE(after_text.find("BOTTOM_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC1_YAxisInversion_BottomHalfVisualBoxErasesBottomTextOnly) {
+    std::string pdf = MakeSyntheticCanaryPdf("TOP_SECRET", "BOTTOM_PUBLIC");
+    MuPDFWrapper wrapper(pdf);
+
+    // Bottom-half visual box: [0.0, 0.5, 1.0, 1.0] in visual top-left space
+    ml::worker::v1::NormalizedRedactionBox bottom_box;
+    bottom_box.set_page_number(1);
+    bottom_box.set_x0(0.0f);
+    bottom_box.set_y0(0.5f);
+    bottom_box.set_x1(1.0f);
+    bottom_box.set_y1(1.0f);
+
+    wrapper.ApplyNormalizedRedactions({&bottom_box, 1});
+
+    std::string redacted_bytes = wrapper.GetRedactedPdf();
+    MuPDFWrapper redacted_wrapper(redacted_bytes);
+    auto [after_text, _] = redacted_wrapper.ExtractPageText(0);
+
+    // AC-1: BOTTOM_PUBLIC (visual bottom) MUST be erased; TOP_SECRET MUST be preserved
+    EXPECT_NE(after_text.find("TOP_SECRET"), std::string::npos);
+    EXPECT_EQ(after_text.find("BOTTOM_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC1_YAxisInversion_RespectsNonZeroPageBoundsY0) {
+    // Non-origin MediaBox [100 100 712 892]
+    std::string pdf = MakeSyntheticCanaryPdf("TOP_SECRET", "BOTTOM_PUBLIC", "[100 100 712 892]", 0, 820.0f, 250.0f, 150.0f);
+    MuPDFWrapper wrapper(pdf);
+
+    auto [init_text, _] = wrapper.ExtractPageText(0);
+    ASSERT_NE(init_text.find("TOP_SECRET"), std::string::npos);
+    ASSERT_NE(init_text.find("BOTTOM_PUBLIC"), std::string::npos);
+
+    ml::worker::v1::NormalizedRedactionBox top_box;
+    top_box.set_page_number(1);
+    top_box.set_x0(0.0f);
+    top_box.set_y0(0.0f);
+    top_box.set_x1(1.0f);
+    top_box.set_y1(0.5f);
+
+    wrapper.ApplyNormalizedRedactions({&top_box, 1});
+
+    std::string redacted_bytes = wrapper.GetRedactedPdf();
+    MuPDFWrapper redacted_wrapper(redacted_bytes);
+    auto [after_text, __] = redacted_wrapper.ExtractPageText(0);
+
+    EXPECT_EQ(after_text.find("TOP_SECRET"), std::string::npos);
+    EXPECT_NE(after_text.find("BOTTOM_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC1_XAxis_Not_Inverted) {
+    std::string pdf = MakeSyntheticLeftRightPdf("LEFT_SECRET", "RIGHT_PUBLIC");
+    MuPDFWrapper wrapper(pdf);
+
+    auto [init_text, _] = wrapper.ExtractPageText(0);
+    ASSERT_NE(init_text.find("LEFT_SECRET"), std::string::npos);
+    ASSERT_NE(init_text.find("RIGHT_PUBLIC"), std::string::npos);
+
+    // Left-half box: [0.0, 0.0, 0.5, 1.0]
+    ml::worker::v1::NormalizedRedactionBox left_box;
+    left_box.set_page_number(1);
+    left_box.set_x0(0.0f);
+    left_box.set_y0(0.0f);
+    left_box.set_x1(0.5f);
+    left_box.set_y1(1.0f);
+
+    wrapper.ApplyNormalizedRedactions({&left_box, 1});
+
+    std::string redacted_bytes = wrapper.GetRedactedPdf();
+    MuPDFWrapper redacted_wrapper(redacted_bytes);
+    auto [after_text, __] = redacted_wrapper.ExtractPageText(0);
+
+    EXPECT_EQ(after_text.find("LEFT_SECRET"), std::string::npos);
+    EXPECT_NE(after_text.find("RIGHT_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC2_Rotation_0DegreePage_IdentityPath) {
+    std::string pdf = MakeSyntheticCanaryPdf("ROT0_SECRET", "ROT0_PUBLIC", "[0 0 612 792]", 0);
+    MuPDFWrapper wrapper(pdf);
+    EXPECT_EQ(wrapper.GetPageRotation(0), 0);
+
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0(0.0f);
+    box.set_y0(0.0f);
+    box.set_x1(1.0f);
+    box.set_y1(0.5f);
+
+    wrapper.ApplyNormalizedRedactions({&box, 1});
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("ROT0_SECRET"), std::string::npos);
+    EXPECT_NE(text.find("ROT0_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC2_Rotation_90DegreePage) {
+    std::string pdf = MakeSyntheticCanaryPdf("ROT90_SECRET", "ROT90_PUBLIC", "[0 0 612 792]", 90, 720.0f, 200.0f, 50.0f);
+    MuPDFWrapper wrapper(pdf);
+    EXPECT_EQ(wrapper.GetPageRotation(0), 90);
+
+    auto [init_text, bboxes] = wrapper.ExtractPageText(0);
+    size_t sec_pos = init_text.find("ROT90_SECRET");
+    ASSERT_NE(sec_pos, std::string::npos);
+
+    // Compute tight visual bbox
+    fz_rect visual_bbox = fz_empty_rect;
+    for (size_t i = 0; i < 12; ++i) {
+        if (sec_pos + i < bboxes.size() && !fz_is_empty_rect(bboxes[sec_pos + i])) {
+            visual_bbox = fz_union_rect(visual_bbox, bboxes[sec_pos + i]);
+        }
+    }
+    ASSERT_FALSE(fz_is_empty_rect(visual_bbox));
+
+    // For rot 90: visual bounds are 792 wide by 612 tall
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0((visual_bbox.x0 - 5.0f) / 792.0f);
+    box.set_y0((visual_bbox.y0 - 5.0f) / 612.0f);
+    box.set_x1((visual_bbox.x1 + 5.0f) / 792.0f);
+    box.set_y1((visual_bbox.y1 + 5.0f) / 612.0f);
+
+    wrapper.ApplyNormalizedRedactions({&box, 1});
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("ROT90_SECRET"), std::string::npos);
+    EXPECT_NE(text.find("ROT90_PUBLIC"), std::string::npos);
+    EXPECT_EQ(r.GetPageRotation(0), 90);
+}
+
+TEST(MPL311Tests, AC2_Rotation_180DegreePage) {
+    std::string pdf = MakeSyntheticCanaryPdf("ROT180_SECRET", "ROT180_PUBLIC", "[0 0 612 792]", 180, 720.0f, 200.0f, 50.0f);
+    MuPDFWrapper wrapper(pdf);
+    EXPECT_EQ(wrapper.GetPageRotation(0), 180);
+
+    auto [init_text, bboxes] = wrapper.ExtractPageText(0);
+    size_t sec_pos = init_text.find("ROT180_SECRET");
+    ASSERT_NE(sec_pos, std::string::npos);
+
+    fz_rect visual_bbox = fz_empty_rect;
+    for (size_t i = 0; i < 13; ++i) {
+        if (sec_pos + i < bboxes.size() && !fz_is_empty_rect(bboxes[sec_pos + i])) {
+            visual_bbox = fz_union_rect(visual_bbox, bboxes[sec_pos + i]);
+        }
+    }
+    ASSERT_FALSE(fz_is_empty_rect(visual_bbox));
+
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0((visual_bbox.x0 - 5.0f) / 612.0f);
+    box.set_y0((visual_bbox.y0 - 5.0f) / 792.0f);
+    box.set_x1((visual_bbox.x1 + 5.0f) / 612.0f);
+    box.set_y1((visual_bbox.y1 + 5.0f) / 792.0f);
+
+    wrapper.ApplyNormalizedRedactions({&box, 1});
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("ROT180_SECRET"), std::string::npos);
+    EXPECT_NE(text.find("ROT180_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC2_Rotation_270DegreePage) {
+    std::string pdf = MakeSyntheticCanaryPdf("ROT270_SECRET", "ROT270_PUBLIC", "[0 0 612 792]", 270, 720.0f, 200.0f, 50.0f);
+    MuPDFWrapper wrapper(pdf);
+    EXPECT_EQ(wrapper.GetPageRotation(0), 270);
+
+    auto [init_text, bboxes] = wrapper.ExtractPageText(0);
+    size_t sec_pos = init_text.find("ROT270_SECRET");
+    ASSERT_NE(sec_pos, std::string::npos);
+
+    fz_rect visual_bbox = fz_empty_rect;
+    for (size_t i = 0; i < 13; ++i) {
+        if (sec_pos + i < bboxes.size() && !fz_is_empty_rect(bboxes[sec_pos + i])) {
+            visual_bbox = fz_union_rect(visual_bbox, bboxes[sec_pos + i]);
+        }
+    }
+    ASSERT_FALSE(fz_is_empty_rect(visual_bbox));
+
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0((visual_bbox.x0 - 5.0f) / 792.0f);
+    box.set_y0((visual_bbox.y0 - 5.0f) / 612.0f);
+    box.set_x1((visual_bbox.x1 + 5.0f) / 792.0f);
+    box.set_y1((visual_bbox.y1 + 5.0f) / 612.0f);
+
+    wrapper.ApplyNormalizedRedactions({&box, 1});
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("ROT270_SECRET"), std::string::npos);
+    EXPECT_NE(text.find("ROT270_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC2_MultiPage_MixedRotations) {
+    std::string pdf = MakeSyntheticMultiPageMixedRotationPdf();
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 3);
+    EXPECT_EQ(wrapper.GetPageRotation(0), 0);
+    EXPECT_EQ(wrapper.GetPageRotation(1), 90);
+    EXPECT_EQ(wrapper.GetPageRotation(2), 270);
+
+    ml::worker::v1::NormalizedRedactionBox b1, b2, b3;
+    b1.set_page_number(1);
+    b1.set_x0(0.0f); b1.set_y0(0.0f); b1.set_x1(1.0f); b1.set_y1(1.0f);
+
+    b2.set_page_number(2);
+    b2.set_x0(0.0f); b2.set_y0(0.0f); b2.set_x1(1.0f); b2.set_y1(1.0f);
+
+    b3.set_page_number(3);
+    b3.set_x0(0.0f); b3.set_y0(0.0f); b3.set_x1(1.0f); b3.set_y1(1.0f);
+
+    std::vector<ml::worker::v1::NormalizedRedactionBox> all_boxes = {b1, b2, b3};
+    wrapper.ApplyNormalizedRedactions(all_boxes);
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    ASSERT_EQ(r.GetPageCount(), 3);
+    EXPECT_EQ(r.ExtractPageText(0).text.find("Page1Secret"), std::string::npos);
+    EXPECT_EQ(r.ExtractPageText(1).text.find("Page2Secret"), std::string::npos);
+    EXPECT_EQ(r.ExtractPageText(2).text.find("Page3Secret"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC4_CoordinateClamping_Outside01) {
+    std::string pdf = MakeSyntheticCanaryPdf("CLAMP_TARGET", "PRESERVE_ME");
+    MuPDFWrapper wrapper(pdf);
+
+    // Box with coordinates outside [0.0, 1.0] covering the top half
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0(-0.5f);
+    box.set_y0(-0.5f);
+    box.set_x1(1.5f);
+    box.set_y1(0.45f);
+
+    EXPECT_NO_THROW(wrapper.ApplyNormalizedRedactions({&box, 1}));
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("CLAMP_TARGET"), std::string::npos);
+    EXPECT_NE(text.find("PRESERVE_ME"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC4_SwappedCoordinates_NormalizedViaMinMax) {
+    std::string pdf = MakeSyntheticCanaryPdf("SWAP_SECRET", "SWAP_PUBLIC");
+    MuPDFWrapper wrapper(pdf);
+
+    // Box with swapped coordinates: x0 > x1 and y0 > y1
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0(0.8f);
+    box.set_x1(0.0f);
+    box.set_y0(0.45f);
+    box.set_y1(0.0f);
+
+    wrapper.ApplyNormalizedRedactions({&box, 1});
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("SWAP_SECRET"), std::string::npos);
+    EXPECT_NE(text.find("SWAP_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC4_DegenerateCollapsedBoxes_SkippedSilently) {
+    std::string pdf = MakeSyntheticCanaryPdf("VALID_SECRET", "VALID_PUBLIC");
+    MuPDFWrapper wrapper(pdf);
+
+    ml::worker::v1::NormalizedRedactionBox degenerate_x;
+    degenerate_x.set_page_number(1);
+    degenerate_x.set_x0(0.5f); degenerate_x.set_x1(0.5f);
+    degenerate_x.set_y0(0.0f); degenerate_x.set_y1(1.0f);
+
+    ml::worker::v1::NormalizedRedactionBox degenerate_y;
+    degenerate_y.set_page_number(1);
+    degenerate_y.set_x0(0.0f); degenerate_y.set_x1(1.0f);
+    degenerate_y.set_y0(0.5f); degenerate_y.set_y1(0.5f);
+
+    ml::worker::v1::NormalizedRedactionBox valid_box;
+    valid_box.set_page_number(1);
+    valid_box.set_x0(0.0f); valid_box.set_y0(0.0f);
+    valid_box.set_x1(1.0f); valid_box.set_y1(0.45f);
+
+    std::vector<ml::worker::v1::NormalizedRedactionBox> boxes = {degenerate_x, degenerate_y, valid_box};
+    EXPECT_NO_THROW(wrapper.ApplyNormalizedRedactions(boxes));
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("VALID_SECRET"), std::string::npos);
+    EXPECT_NE(text.find("VALID_PUBLIC"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC4_EmptyCustomBoxes_NoOp) {
+    std::string pdf = MakeSyntheticCanaryPdf("KEEP_A", "KEEP_B");
+    MuPDFWrapper wrapper(pdf);
+
+    EXPECT_NO_THROW(wrapper.ApplyNormalizedRedactions({}));
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_NE(text.find("KEEP_A"), std::string::npos);
+    EXPECT_NE(text.find("KEEP_B"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC4_CustomFillColorOverride) {
+    std::string pdf = MakeSyntheticCanaryPdf("RED_TARGET", "BODY_INFO");
+    MuPDFWrapper wrapper(pdf);
+
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0(0.0f); box.set_y0(0.0f); box.set_x1(1.0f); box.set_y1(0.45f);
+
+    float red_color[3] = {1.0f, 0.0f, 0.0f};
+    wrapper.ApplyNormalizedRedactions({&box, 1}, red_color);
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    MuPDFWrapper r(redacted);
+    auto [text, _] = r.ExtractPageText(0);
+    EXPECT_EQ(text.find("RED_TARGET"), std::string::npos);
+    EXPECT_NE(text.find("BODY_INFO"), std::string::npos);
+}
+
+TEST(MPL311Tests, AC6_FailFast_OutOfRangePageNumber_ThrowsOutOfRange) {
+    std::string pdf = MakeSyntheticCanaryPdf("SECRET", "PUBLIC");
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 1);
+
+    ml::worker::v1::NormalizedRedactionBox bad_box_high;
+    bad_box_high.set_page_number(99);
+
+    EXPECT_THROW(
+        wrapper.ApplyNormalizedRedactions({&bad_box_high, 1}),
+        std::out_of_range
+    );
+
+    EXPECT_THROW(
+        wrapper.ApplyRedactions(-1, {}),
+        std::out_of_range
+    );
+
+    EXPECT_THROW(
+        wrapper.ApplyRedactions(1, {}),
+        std::out_of_range
+    );
+}
+
+TEST(MPL311Tests, AC6_ForensicPreservation_PermanentGlyphDestruction) {
+    std::string pdf = MakeSyntheticCanaryPdf("PERMANENT_SECRET", "SURVIVING_BODY");
+    MuPDFWrapper wrapper(pdf);
+
+    ml::worker::v1::NormalizedRedactionBox box;
+    box.set_page_number(1);
+    box.set_x0(0.0f); box.set_y0(0.0f); box.set_x1(1.0f); box.set_y1(0.45f);
+
+    wrapper.ApplyNormalizedRedactions({&box, 1});
+
+    std::string redacted_pdf_bytes = wrapper.GetRedactedPdf();
+    EXPECT_GT(redacted_pdf_bytes.size(), 0);
+
+    // Verify reloaded PDF is valid and secret glyphs are irrevocably destroyed
+    MuPDFWrapper reloaded(redacted_pdf_bytes);
+    EXPECT_EQ(reloaded.GetPageCount(), 1);
+    auto [extracted_text, _] = reloaded.ExtractPageText(0);
+    EXPECT_EQ(extracted_text.find("PERMANENT_SECRET"), std::string::npos);
+    EXPECT_NE(extracted_text.find("SURVIVING_BODY"), std::string::npos);
+}
+
+
 
 namespace {
     class MultiSubtokenMockTokenizer : public ITokenizer {
