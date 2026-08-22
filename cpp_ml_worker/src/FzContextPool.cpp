@@ -61,9 +61,9 @@ FzContextPool::PooledContext FzContextPool::Checkout() {
     std::lock_guard<std::mutex> lk(mu_);
     if (free_.empty()) {
         exhausted_count_.fetch_add(1, std::memory_order_relaxed);
-        spdlog::warn("FzContextPool exhausted capacity={} in_use={}", capacity_, capacity_ - free_.size());
+        spdlog::warn("FzContextPool exhausted capacity={} in_use={}", capacity_, in_use_debug_.size());
         throw std::runtime_error("FzContextPool exhausted: capacity " + std::to_string(capacity_) +
-                                 " in_use " + std::to_string(capacity_));
+                                 " in_use " + std::to_string(in_use_debug_.size()));
     }
     fz_context* ctx = free_.back();
     free_.pop_back();
@@ -78,20 +78,12 @@ FzContextPool::PooledContext FzContextPool::Checkout() {
     }
     spdlog::debug("FzContextPool checkout latency={:.3f}ms in_use={} available={}", latency_ms,
                   in_use_debug_.size(), free_.size());
-    // Construct PooledContext with shared_from_this; need to be owned by shared_ptr
-    // Must handle case where this is not yet managed by shared_ptr (e.g., stack allocation in tests)
-    // Try shared_from_this, fallback to raw this with no ownership if it throws
+    // Require shared_ptr ownership; stack-allocated pools must be wrapped in shared_ptr for Checkout.
     std::shared_ptr<FzContextPool> self;
     try {
         self = shared_from_this();
     } catch (const std::bad_weak_ptr&) {
-        // Not owned by shared_ptr – create a non-owning shared_ptr with no deleter
-        // But Checkin would then use self which is empty; we need to capture pool via raw pointer?
-        // Instead, we require that Checkout is only called on shared_ptr-owned pools.
-        // For stack-allocated pools in tests, this path may be hit; we create aliasing shared_ptr with null deleter
-        // Caller must ensure pool lifetime exceeds lease – for test stack case, this is true for duration of test.
-        // Use shared_ptr with custom deleter that does nothing.
-        self = std::shared_ptr<FzContextPool>(this, [](FzContextPool*) {});
+        throw std::logic_error("FzContextPool::Checkout requires pool owned by std::shared_ptr (use std::make_shared)");
     }
     // Unlock before constructing return value (already unlocked via lock_guard destructor sequencing)
     // Use direct construction
@@ -162,8 +154,11 @@ size_t FzContextPool::ResolveCapacity() {
         try {
             size_t v = static_cast<size_t>(std::stoul(env));
             if (v >= 1) return v;
+            spdlog::warn("MUPDF_POOL_SIZE must be >=1, got '{}', using default", env);
+        } catch (const std::exception& e) {
+            spdlog::warn("Invalid MUPDF_POOL_SIZE='{}': {}, using default", env, e.what());
         } catch (...) {
-            // fall through to default
+            spdlog::warn("Invalid MUPDF_POOL_SIZE='{}', using default", env);
         }
     }
     unsigned hc = std::thread::hardware_concurrency();
