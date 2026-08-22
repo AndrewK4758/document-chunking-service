@@ -87,7 +87,7 @@ FzContextPool::PooledContext FzContextPool::Checkout() {
     }
     // Unlock before constructing return value (already unlocked via lock_guard destructor sequencing)
     // Use direct construction
-    return PooledContext(ctx, std::move(self));
+    return {ctx, std::move(self)};
 }
 
 void FzContextPool::Checkin(fz_context* ctx) noexcept {
@@ -97,7 +97,7 @@ void FzContextPool::Checkin(fz_context* ctx) noexcept {
         return;
     }
     std::lock_guard<std::mutex> lk(mu_);
-    auto it = std::find(in_use_debug_.begin(), in_use_debug_.end(), ctx);
+    const auto it = std::ranges::find(in_use_debug_, ctx);
     if (it == in_use_debug_.end()) {
         drop_mismatch_count_.fetch_add(1, std::memory_order_relaxed);
         spdlog::error("FzContextPool::Checkin drop_mismatch: context not in in_use set");
@@ -132,8 +132,8 @@ double FzContextPool::GetP95CheckoutMs() const {
     std::lock_guard<std::mutex> lk(mu_);
     if (latencies_ms_.empty()) return 0.0;
     std::vector<double> sorted = latencies_ms_;
-    std::sort(sorted.begin(), sorted.end());
-    size_t idx = static_cast<size_t>(0.95 * sorted.size());
+    std::ranges::sort(sorted);
+    auto idx = static_cast<size_t>(sorted.size() * 0.95);
     if (idx >= sorted.size()) idx = sorted.size() - 1;
     return sorted[idx];
 }
