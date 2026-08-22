@@ -13,6 +13,7 @@
 #include "MuPDFWrapper.h"
 #include "MLInferenceEngine.h"
 #include "FzContextPool.h"
+#include "GrpcStatusHelper.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -63,10 +64,10 @@ namespace {
         Status RedactDocument(ServerContext* context, const RedactDocumentRequest* request, RedactDocumentResponse* response) override {
             try {
                 if (request->document_uri().empty()) {
-                    throw std::runtime_error("Missing document_uri in request");
+                    throw std::invalid_argument("Missing document_uri in request");
                 }
                 if (!request->has_identity()) {
-                    throw std::runtime_error("Missing identity in request");
+                    throw std::invalid_argument("Missing identity in request");
                 }
 
                 std::string job_id = request->identity().job_id();
@@ -138,11 +139,30 @@ namespace {
                 response->set_error_message("");
                 return Status::OK;
 
+            } catch (const std::invalid_argument& ex) {
+                std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromException(ex, job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
+            } catch (const std::out_of_range& ex) {
+                std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromException(ex, job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
             } catch (const std::exception& ex) {
-                spdlog::error("Fatal error during execution: {}", ex.what());
-                response->set_success(false);
-                response->set_error_message(ex.what());
-                throw; // Fail fast principle
+                std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromException(ex, job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
+            } catch (...) {
+                std::string job_id = request && request->has_identity() ? request->identity().job_id() : "";
+                std::string tenant_id = request && request->has_identity() ? request->identity().tenant_id() : "";
+                std::string app_id = request && request->has_identity() ? request->identity().app_id() : "";
+                std::string traceparent = doc_processor::ExtractTraceparent(context);
+                return doc_processor::GrpcStatusFromUnknown(job_id, traceparent, "CppMlWorkerService/RedactDocument", tenant_id, app_id);
             }
         }
 

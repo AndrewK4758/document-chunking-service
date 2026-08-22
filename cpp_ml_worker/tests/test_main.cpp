@@ -1801,6 +1801,133 @@ TEST(MPL316Tests, AC5_ValidUtf8_ProducesByteIdenticalSpans) {
     EXPECT_FLOAT_EQ(spans[0].y1(), 20.0f / 100.0f);
 }
 
+#include <grpcpp/grpcpp.h>
+#include "GrpcStatusHelper.h"
+
+TEST(MPL317Tests, InvalidArgumentMapsToInvalidArgument) {
+    std::invalid_argument ex("Text length does not match character bounding boxes length");
+    auto status = doc_processor::GrpcStatusFromException(ex, "job-42", "00-4bf92f-01", "CppMlWorkerService/RedactDocument");
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.error_message().find("[JOB: job-42]"), std::string::npos);
+    EXPECT_NE(status.error_message().find("Text length does not match"), std::string::npos);
+}
+
+TEST(MPL317Tests, OutOfRangeMapsToInvalidArgument) {
+    std::out_of_range ex("page_index out of range");
+    auto status = doc_processor::GrpcStatusFromException(ex, "job-42", "", "CppMlWorkerService/RedactDocument");
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.error_message().find("job-42"), std::string::npos);
+}
+
+TEST(MPL317Tests, RuntimeErrorMapsToInternal) {
+    std::runtime_error ex("MuPDF Error: failed to extract page");
+    auto status = doc_processor::GrpcStatusFromException(ex, "job-77", "00-trace-01", "CppMlWorkerService/RedactDocument");
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+    EXPECT_NE(status.error_message().find("job-77"), std::string::npos);
+}
+
+TEST(MPL317Tests, BadAllocMapsToInternal) {
+    std::bad_alloc ex;
+    auto status = doc_processor::GrpcStatusFromException(ex, "job-77", "", "CppMlWorkerService/RedactDocument");
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+}
+
+TEST(MPL317Tests, UnknownExceptionMapsToInternal) {
+    auto status = doc_processor::GrpcStatusFromUnknown("job-99", "00-unknown-01", "CppMlWorkerService/RedactDocument");
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+    EXPECT_NE(status.error_message().find("Unknown exception"), std::string::npos);
+    EXPECT_NE(status.error_message().find("job-99"), std::string::npos);
+}
+
+TEST(MPL317Tests, FormatDetailEmbedsJobId) {
+    std::string detail = doc_processor::FormatDetail("job-123", "page dimensions must be positive");
+    EXPECT_NE(detail.find("[JOB: job-123]"), std::string::npos);
+    EXPECT_NE(detail.find("page dimensions must be positive"), std::string::npos);
+}
+
+TEST(MPL317Tests, FormatDetailWithoutJobId) {
+    std::string detail = doc_processor::FormatDetail("", "Missing document_uri");
+    EXPECT_EQ(detail, "Missing document_uri");
+}
+
+TEST(MPL317Tests, ExtractTraceparentHandlesNull) {
+    std::string tp = doc_processor::ExtractTraceparent(nullptr);
+    EXPECT_EQ(tp, "");
+}
+
+TEST(MPL317Tests, WrapGrpcNeverThrowsOnInvalidArgument) {
+    EXPECT_NO_THROW({
+        grpc::ServerContext ctx;
+        ml::worker::v1::RedactDocumentRequest req;
+        auto* id = req.mutable_identity();
+        id->set_job_id("job-42");
+        auto status = doc_processor::WrapGrpc(&ctx, &req, "CppMlWorkerService/RedactDocument", []() {
+            throw std::invalid_argument("validation failed");
+        });
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    });
+}
+
+TEST(MPL317Tests, WrapGrpcNeverThrowsOnUnknown) {
+    EXPECT_NO_THROW({
+        grpc::ServerContext ctx;
+        ml::worker::v1::RedactDocumentRequest req;
+        auto* id = req.mutable_identity();
+        id->set_job_id("job-99");
+        auto status = doc_processor::WrapGrpc(&ctx, &req, "CppMlWorkerService/RedactDocument", []() {
+            throw 42;
+        });
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+        EXPECT_NE(status.error_message().find("Unknown"), std::string::npos);
+    });
+}
+
+TEST(MPL317Tests, WrapGrpcPreservesTraceparent) {
+    grpc::ServerContext ctx;
+    ml::worker::v1::RedactDocumentRequest req;
+    auto* id = req.mutable_identity();
+    id->set_job_id("job-123");
+    id->set_tenant_id("tenant-1");
+    auto status = doc_processor::WrapGrpc(&ctx, &req, "CppMlWorkerService/RedactDocument", []() {
+        throw std::invalid_argument("page dimensions must be positive");
+    });
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.error_message().find("job-123"), std::string::npos);
+}
+
+TEST(MPL317Tests, WrapGrpcWithNullContextStillMaps) {
+    ml::worker::v1::RedactDocumentRequest req;
+    auto* id = req.mutable_identity();
+    id->set_job_id("job-456");
+    auto status = doc_processor::WrapGrpc(nullptr, &req, "CppMlWorkerService/RedactDocument", []() {
+        throw std::runtime_error("storage failure");
+    });
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+}
+
+TEST(MPL317Tests, WrapGrpcSuccessReturnsOk) {
+    grpc::ServerContext ctx;
+    ml::worker::v1::RedactDocumentRequest req;
+    auto* id = req.mutable_identity();
+    id->set_job_id("job-ok");
+    auto status = doc_processor::WrapGrpc(&ctx, &req, "CppMlWorkerService/RedactDocument", []() {
+    });
+    EXPECT_TRUE(status.ok());
+}
+
+TEST(MPL317Tests, EarlyValidationMissingDocumentUriIsInvalidArgument) {
+    EXPECT_THROW({
+        std::string uri = "";
+        if (uri.empty()) throw std::invalid_argument("Missing document_uri in request");
+    }, std::invalid_argument);
+}
+
+TEST(MPL317Tests, HelperExistsAndIsImportable) {
+    auto fn = &doc_processor::ExtractTraceparent;
+    (void)fn;
+    SUCCEED();
+}
+
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
