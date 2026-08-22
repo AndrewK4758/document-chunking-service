@@ -12,6 +12,7 @@
 #include "StorageGatewayClient.h"
 #include "MuPDFWrapper.h"
 #include "MLInferenceEngine.h"
+#include "FzContextPool.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -45,7 +46,12 @@ static bool load_env_file(const std::string& path) {
 namespace {
     class CppMlWorkerServiceImpl final : public CppMlWorkerService::Service {
     public:
-        CppMlWorkerServiceImpl(const std::string& model_path, const std::string& tokenizer_path, const std::string& storage_gateway_uri) {
+        CppMlWorkerServiceImpl(std::shared_ptr<FzContextPool> pool,
+                               const std::string& model_path, const std::string& tokenizer_path, const std::string& storage_gateway_uri)
+            : pool_(std::move(pool)) {
+            if (!pool_) {
+                throw std::runtime_error("FzContextPool is null");
+            }
             storage_client_ = std::make_unique<StorageGatewayClient>(
                 grpc::CreateChannel(storage_gateway_uri, grpc::InsecureChannelCredentials()));
 
@@ -70,7 +76,7 @@ namespace {
                 const std::string pdf_data = storage_client_->Download(request->document_uri(), request->identity());
 
                 spdlog::info("[JOB: {}] 2. Initializing MuPDF context...", job_id);
-                const MuPDFWrapper mupdf(pdf_data);
+                const MuPDFWrapper mupdf(pdf_data, pool_);
                 const int page_count = mupdf.GetPageCount();
                 spdlog::info("[JOB: {}]    -> Document loaded successfully with {} pages.", job_id, page_count);
 
@@ -113,6 +119,7 @@ namespace {
         }
 
     private:
+        std::shared_ptr<FzContextPool> pool_;
         std::unique_ptr<StorageGatewayClient> storage_client_;
         std::unique_ptr<IMLInferenceEngine> engine_;
     };
@@ -152,7 +159,8 @@ int main(int argc, char** argv) {
     if (const char* env_addr = std::getenv("SERVER_ADDRESS")) {
         server_address = env_addr;
     }
-    CppMlWorkerServiceImpl service(model_path, tokenizer_path, storage_gateway_uri);
+    auto pool = std::make_shared<FzContextPool>(FzContextPool::ResolveCapacity());
+    CppMlWorkerServiceImpl service(pool, model_path, tokenizer_path, storage_gateway_uri);
 
     ServerBuilder builder;
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
