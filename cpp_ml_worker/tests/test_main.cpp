@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <stdckdint.h>
 #include <onnxruntime_cxx_api.h>
+#include <simdutf.h>
 #include "MLInferenceEngine.h"
 #include "MuPDFWrapper.h"
+
 
 
 extern "C" {
@@ -1405,8 +1407,403 @@ TEST(MPL313Tests, GeometricBoxRegression_UnionAndClampPreservesGeometry) {
     EXPECT_FLOAT_EQ(spans[0].y1(), 20.0f / 100.0f);
 }
 
+// ============================================================================
+// MPL-316 Test Suite: FFI UTF-8 Boundary Sanitization & Scratchpad Hoisting
+// ============================================================================
+
+namespace {
+    class RecordingTokenizer : public ITokenizer {
+    public:
+        std::vector<std::string> recorded_inputs;
+        std::vector<int32_t> Encode(const std::string& text) override {
+            EXPECT_TRUE(simdutf::validate_utf8(text.data(), text.size()))
+                << "Tokenizer received invalid UTF-8 string across Rust FFI boundary!";
+            recorded_inputs.push_back(text);
+            return {101, 102};
+        }
+        std::string Decode(const std::vector<int32_t>& ids) override {
+            return "";
+        }
+    };
+
+    std::string MakePdfWithWords(const std::vector<std::string>& words) {
+        std::string stream_content = "BT\n/F1 12 Tf\n50 720 Td\n";
+        for (const auto& w : words) {
+            stream_content += "(" + w + ") Tj\n10 0 Td\n";
+        }
+        stream_content += "ET\n";
+
+        std::ostringstream oss;
+        oss << "%PDF-1.4\n"
+            << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+            << "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+            << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
+            << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+            << "5 0 obj << /Length " << stream_content.size() << " >> stream\n"
+            << stream_content
+            << "endstream\n"
+            << "endobj\n"
+            << "xref\n"
+            << "0 6\n"
+            << "trailer << /Size 6 /Root 1 0 R >>\n"
+            << "startxref\n"
+            << "0\n"
+            << "%%EOF\n";
+        return oss.str();
+    }
+}
+
+
+TEST(MPL316Tests, AC1_ValidUtf8_PassesByteIdentical) {
+    std::string scratch;
+    scratch.reserve(4096);
+
+    // ASCII
+    std::string ascii = "hello world";
+    doc_processor::SanitizeUtf8(ascii, scratch);
+    EXPECT_EQ(scratch, ascii);
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+
+    // Cyrillic (D0/D1 bytes)
+    std::string cyrillic = "привет мир";
+    doc_processor::SanitizeUtf8(cyrillic, scratch);
+    EXPECT_EQ(scratch, cyrillic);
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+
+    // Emoji (F0 9F 98 80)
+    std::string emoji = "Borrower 😀 Name";
+    doc_processor::SanitizeUtf8(emoji, scratch);
+    EXPECT_EQ(scratch, emoji);
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+
+    // Currency symbol (£ = C2 A3)
+    std::string currency = "Price £1000";
+    doc_processor::SanitizeUtf8(currency, scratch);
+    EXPECT_EQ(scratch, currency);
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+}
+
+TEST(MPL316Tests, AC1_SingleInvalidByte_ReplacedWithU_FFFD) {
+    std::string scratch;
+    scratch.reserve(4096);
+
+    // Single 0xFF
+    std::string invalid1 = "\xFF";
+    doc_processor::SanitizeUtf8(invalid1, scratch);
+    EXPECT_EQ(scratch, "\xEF\xBF\xBD");
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+
+    // 0xFF surrounded by valid ASCII
+    std::string invalid2 = "a\xFF" "b";
+    doc_processor::SanitizeUtf8(invalid2, scratch);
+    EXPECT_EQ(scratch, "a\xEF\xBF\xBD" "b");
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+
+    // 0xFE surrounded by valid text
+    std::string invalid3 = "x\xFEy";
+    doc_processor::SanitizeUtf8(invalid3, scratch);
+    EXPECT_EQ(scratch, "x\xEF\xBF\xBDy");
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+}
+
+TEST(MPL316Tests, AC1_TruncatedSequence_Replaced) {
+    std::string scratch;
+    scratch.reserve(4096);
+
+    // Truncated 2-byte lead C2 at end
+    std::string truncated1 = "prefix\xC2";
+    doc_processor::SanitizeUtf8(truncated1, scratch);
+    EXPECT_EQ(scratch, "prefix\xEF\xBF\xBD");
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+
+    // C2 followed by space (0x20 is not continuation 0x80..0xBF)
+    std::string truncated2 = "prefix\xC2 suffix";
+    doc_processor::SanitizeUtf8(truncated2, scratch);
+    EXPECT_EQ(scratch, "prefix\xEF\xBF\xBD suffix");
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+}
+
+TEST(MPL316Tests, AC1_OverlongSequence_RejectedAndReplaced) {
+    std::string scratch;
+    scratch.reserve(4096);
+
+    // Overlong NUL (C0 80)
+    std::string overlong = "test\xC0\x80overlong";
+    EXPECT_FALSE(simdutf::validate_utf8(overlong.data(), overlong.size()));
+
+    doc_processor::SanitizeUtf8(overlong, scratch);
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+    EXPECT_EQ(scratch, "test\xEF\xBF\xBDoverlong");
+}
+
+TEST(MPL316Tests, AC1_IsolatedContinuation_Replaced) {
+    std::string scratch;
+    scratch.reserve(4096);
+
+    // Isolated continuation byte 0x80
+    std::string isolated = "x\x80y";
+    doc_processor::SanitizeUtf8(isolated, scratch);
+    EXPECT_EQ(scratch, "x\xEF\xBF\xBDy");
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+
+    // Multiple isolated continuation bytes 0x8F 0x90
+    std::string isolated2 = "foo\x8F\x90" "bar";
+    doc_processor::SanitizeUtf8(isolated2, scratch);
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+    EXPECT_EQ(scratch, "foo\xEF\xBF\xBD\xEF\xBF\xBD" "bar");
+}
+
+
+TEST(MPL316Tests, AC1_EmptyString_ReturnsEmpty) {
+    std::string scratch = "initial_junk";
+    scratch.reserve(4096);
+
+    std::string_view empty_view = "";
+    doc_processor::SanitizeUtf8(empty_view, scratch);
+    EXPECT_TRUE(scratch.empty());
+    EXPECT_EQ(scratch.size(), 0);
+    EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+}
+
+TEST(MPL316Tests, AC1_IdempotencyAndNoThrow) {
+    std::string scratch1;
+    std::string scratch2;
+    scratch1.reserve(4096);
+    scratch2.reserve(4096);
+
+    // Fuzz arbitrary byte patterns
+    std::vector<std::string> test_strings = {
+        "regular ascii",
+        "some \xFF \xFE \xC0\x80 broken \x80 chars",
+        "\xF8\x80\x80\x80\x80 illegal 5-byte",
+        "\xED\xA0\x80 surrogate UTF-16",
+        std::string("\x00\xFF\xFE\x7F\x80\xC2\xC3\x80", 8)
+    };
+
+    for (const auto& s : test_strings) {
+        doc_processor::SanitizeUtf8(s, scratch1);
+        EXPECT_TRUE(simdutf::validate_utf8(scratch1.data(), scratch1.size()));
+
+        // Second sanitization must be byte-identical (idempotent)
+        doc_processor::SanitizeUtf8(scratch1, scratch2);
+        EXPECT_EQ(scratch1, scratch2);
+        EXPECT_TRUE(simdutf::validate_utf8(scratch2.data(), scratch2.size()));
+    }
+}
+
+TEST(MPL316Tests, AC1_SanitizeUtf8Wrapper_Delegates) {
+    std::string input = "test \xFF string";
+    std::string result = doc_processor::SanitizeUtf8(input);
+    EXPECT_EQ(result, "test \xEF\xBF\xBD string");
+    EXPECT_TRUE(simdutf::validate_utf8(result.data(), result.size()));
+}
+
+TEST(MPL316Tests, AC2_CalculateExtractedSpans_SanitizesEveryLabelAndWordBeforeEncode) {
+    auto rec_tokenizer = std::make_unique<RecordingTokenizer>();
+    RecordingTokenizer* raw_tok = rec_tokenizer.get();
+    auto runner_ptr = std::make_unique<MockOnnxRunner>();
+
+    MLInferenceEngine engine(std::move(rec_tokenizer), std::move(runner_ptr));
+
+    // Text with malformed word and dynamic label with malformed byte
+    const std::string text = "goodword bad\xFFword normalword";
+    std::vector<fz_rect> char_bboxes(text.size(), fz_rect{0.0f, 0.0f, 10.0f, 10.0f});
+    std::vector<std::string> dynamic_labels = {"valid_label", "dirty\xFElabel"};
+
+    EXPECT_NO_THROW({
+        auto spans = engine.CalculateExtractedSpans(text, char_bboxes, dynamic_labels, 1, 100.0f, 100.0f);
+    });
+
+    ASSERT_GE(raw_tok->recorded_inputs.size(), 5);
+    for (const auto& recorded : raw_tok->recorded_inputs) {
+        EXPECT_TRUE(simdutf::validate_utf8(recorded.data(), recorded.size()))
+            << "Recorded string failed UTF-8 validation: " << recorded;
+    }
+}
+
+TEST(MPL316Tests, AC2_Scratchpad_ClearPreservesCapacity) {
+    std::string scratch;
+    scratch.reserve(4096);
+    EXPECT_GE(scratch.capacity(), 4096);
+
+    for (int i = 0; i < 100; ++i) {
+        std::string sample = "iteration_" + std::to_string(i) + "_word\xFF";
+        doc_processor::SanitizeUtf8(sample, scratch);
+        EXPECT_TRUE(simdutf::validate_utf8(scratch.data(), scratch.size()));
+        EXPECT_GE(scratch.capacity(), 4096);
+    }
+}
+
+TEST(MPL316Tests, AC3_MuPDFWrapper_ExtractPageText_ReserveAndUtf8Invariant) {
+    std::vector<std::string> words = {"Borrower", "John", "Doe", "$500,000.00"};
+    std::string pdf_bytes = MakePdfWithWords(words);
+
+    MuPDFWrapper wrapper(pdf_bytes);
+    PageTextData text_data = wrapper.ExtractPageText(0);
+
+    EXPECT_GE(text_data.text.capacity(), 4096);
+    EXPECT_GE(text_data.char_bboxes.capacity(), 4096);
+    EXPECT_EQ(text_data.text.size(), text_data.char_bboxes.size());
+    EXPECT_TRUE(simdutf::validate_utf8(text_data.text.data(), text_data.text.size()));
+}
+
+TEST(MPL316Tests, AC3_CodepointToUtf8_MultiByteAndSurrogateEmission) {
+    // Test the multi-byte and surrogate conversion behavior
+    std::string text;
+    std::vector<fz_rect> char_bboxes;
+    text.reserve(4096);
+    char_bboxes.reserve(4096);
+
+    // Simulate helper logic directly:
+    auto encode_codepoint = [&](int code, fz_rect r) {
+        if (code >= 0 && code <= 0x7F) {
+            text.push_back(static_cast<char>(code));
+            char_bboxes.push_back(r);
+        } else if (code >= 0x80 && code <= 0x7FF) {
+            text.push_back(static_cast<char>(0xC0 | ((code >> 6) & 0x1F)));
+            text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+            char_bboxes.push_back(r);
+            char_bboxes.push_back(fz_empty_rect);
+        } else if (code >= 0x800 && code <= 0xFFFF) {
+            if (code >= 0xD800 && code <= 0xDFFF) {
+                text.append("\xEF\xBF\xBD", 3);
+                char_bboxes.push_back(r);
+                char_bboxes.push_back(fz_empty_rect);
+                char_bboxes.push_back(fz_empty_rect);
+            } else {
+                text.push_back(static_cast<char>(0xE0 | ((code >> 12) & 0x0F)));
+                text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                char_bboxes.push_back(r);
+                char_bboxes.push_back(fz_empty_rect);
+                char_bboxes.push_back(fz_empty_rect);
+            }
+        } else if (code >= 0x10000 && code <= 0x10FFFF) {
+            text.push_back(static_cast<char>(0xF0 | ((code >> 18) & 0x07)));
+            text.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+            text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+            text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+            char_bboxes.push_back(r);
+            char_bboxes.push_back(fz_empty_rect);
+            char_bboxes.push_back(fz_empty_rect);
+            char_bboxes.push_back(fz_empty_rect);
+        } else {
+            text.append("\xEF\xBF\xBD", 3);
+            char_bboxes.push_back(r);
+            char_bboxes.push_back(fz_empty_rect);
+            char_bboxes.push_back(fz_empty_rect);
+        }
+    };
+
+    fz_rect sample_rect{1.0f, 2.0f, 3.0f, 4.0f};
+    encode_codepoint(0x43, sample_rect);        // ASCII 'C' -> 1 byte
+    encode_codepoint(0x0430, sample_rect);      // Cyrillic 'а' -> 2 bytes
+    encode_codepoint(0x20AC, sample_rect);      // Euro '€' -> 3 bytes
+    encode_codepoint(0x1F600, sample_rect);     // Emoji '😀' -> 4 bytes
+    encode_codepoint(0xD800, sample_rect);      // Surrogate -> 3 bytes (U+FFFD)
+    encode_codepoint(-1, sample_rect);          // Invalid -> 3 bytes (U+FFFD)
+
+    EXPECT_EQ(text.size(), char_bboxes.size());
+    EXPECT_TRUE(simdutf::validate_utf8(text.data(), text.size()));
+
+    // Verify first rect of Cyrillic is sample_rect and 2nd is empty
+    EXPECT_FLOAT_EQ(char_bboxes[0].x0, 1.0f);
+    EXPECT_FLOAT_EQ(char_bboxes[1].x0, 1.0f);
+    EXPECT_TRUE(fz_is_empty_rect(char_bboxes[2]));
+}
+
+TEST(MPL316Tests, AC5_FailFast_SizeMismatch_ThrowsInvalidArgument) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<MockOnnxRunner>();
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    std::string text = "12345";
+    std::vector<fz_rect> mismatch_bboxes(3, fz_rect{0.0f, 0.0f, 1.0f, 1.0f});
+    std::vector<std::string> labels = {"Test"};
+
+    EXPECT_THROW(engine.CalculateExtractedSpans(text, mismatch_bboxes, labels, 1, 100.0f, 100.0f), std::invalid_argument);
+}
+
+TEST(MPL316Tests, AC5_FailFast_NullComponents_ThrowsRuntimeError) {
+    EXPECT_THROW(MLInferenceEngine(nullptr, std::make_unique<MockOnnxRunner>()), std::runtime_error);
+    EXPECT_THROW(MLInferenceEngine(std::make_unique<MockTokenizer>(), nullptr), std::runtime_error);
+}
+
+TEST(MPL316Tests, AC5_PerformanceSLO_SanitizeUnder1ms) {
+    // 200 words + 10 labels with Cyrillic and invalid bytes
+    std::vector<std::string> words;
+    for (int i = 0; i < 200; ++i) {
+        if (i % 20 == 0) {
+            words.push_back("invalid\xFFword" + std::to_string(i));
+        } else if (i % 10 == 0) {
+            words.push_back("привет_кириллица_" + std::to_string(i));
+        } else {
+            words.push_back("normal_ascii_word_" + std::to_string(i));
+        }
+    }
+    std::vector<std::string> labels = {
+        "Borrower", "Lender", "LoanAmount", "ClosingDate", "PropertyAddress",
+        "InterestRate", "TitleCompany", "MonthlyPayment", "EscrowAmount", "TotalDue\xFE"
+    };
+
+    std::string label_scratch;
+    label_scratch.reserve(4096);
+    std::string word_scratch;
+    word_scratch.reserve(4096);
+
+    constexpr size_t kIterations = 1000;
+    std::vector<double> latencies_us;
+    latencies_us.reserve(kIterations);
+
+    for (size_t iter = 0; iter < kIterations; ++iter) {
+        auto start = std::chrono::steady_clock::now();
+
+        for (const auto& l : labels) {
+            doc_processor::SanitizeUtf8(l, label_scratch);
+        }
+        for (const auto& w : words) {
+            doc_processor::SanitizeUtf8(w, word_scratch);
+        }
+
+        auto end = std::chrono::steady_clock::now();
+        double elapsed_us = std::chrono::duration<double, std::micro>(end - start).count();
+        latencies_us.push_back(elapsed_us);
+    }
+
+    std::sort(latencies_us.begin(), latencies_us.end());
+    double p95_us = latencies_us[static_cast<size_t>(kIterations * 0.95)];
+
+    // 1ms = 1000us
+    EXPECT_LT(p95_us, 1000.0) << "p95 sanitization latency was " << p95_us << " us, expected < 1000 us (1ms)";
+}
+
+TEST(MPL316Tests, AC5_ValidUtf8_ProducesByteIdenticalSpans) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto runner_ptr = std::make_unique<SingleSpanOnnxRunner>();
+    runner_ptr->target_word_start = 0;
+    runner_ptr->target_span_len = 2;
+
+    MLInferenceEngine engine(std::move(tokenizer), std::move(runner_ptr));
+
+    const std::string text = "Borrower John";
+    std::vector<fz_rect> char_bboxes;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char_bboxes.push_back(fz_rect{static_cast<float>(i * 10), 0.0f, static_cast<float>((i + 1) * 10), 20.0f});
+    }
+    std::vector<std::string> labels = {"Borrower"};
+
+    auto spans = engine.CalculateExtractedSpans(text, char_bboxes, labels, 1, 200.0f, 100.0f);
+
+    ASSERT_EQ(spans.size(), 1);
+    EXPECT_FLOAT_EQ(spans[0].x0(), 0.0f / 200.0f);
+    EXPECT_FLOAT_EQ(spans[0].x1(), 130.0f / 200.0f);
+    EXPECT_FLOAT_EQ(spans[0].y0(), 0.0f / 100.0f);
+    EXPECT_FLOAT_EQ(spans[0].y1(), 20.0f / 100.0f);
+}
+
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
 

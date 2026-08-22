@@ -52,6 +52,20 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(tokenizers_cpp)
 
+# Fetch or find simdutf per MPL-316
+find_package(simdutf CONFIG QUIET)
+if(NOT TARGET simdutf::simdutf)
+  FetchContent_Declare(
+    simdutf
+    GIT_REPOSITORY https://github.com/simdutf/simdutf.git
+    GIT_TAG v6.0.3
+  )
+  FetchContent_MakeAvailable(simdutf)
+endif()
+
+if(NOT TARGET simdutf::simdutf)
+  message(FATAL_ERROR "simdutf required for UTF-8 FFI boundary; install libsimdutf-dev or allow FetchContent")
+endif()
 
 set(PROTO_SRC_DIR ${CMAKE_SOURCE_DIR}/../../shared_protos)
 set(PROTO_BUILD_DIR ${CMAKE_BINARY_DIR}/generated)
@@ -105,10 +119,12 @@ target_link_libraries(worker_lib PUBLIC
   protobuf::libprotobuf
   onnxruntime_imported
   tokenizers_cpp
+  simdutf::simdutf
   mupdf
   spdlog::spdlog
   fmt::fmt
 )
+
 target_compile_features(worker_lib PUBLIC cxx_std_26)
 
 add_executable(cpp_ml_worker src/main.cpp)

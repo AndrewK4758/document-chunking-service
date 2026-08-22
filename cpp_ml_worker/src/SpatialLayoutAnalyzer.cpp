@@ -94,11 +94,33 @@ LayoutFeatures SpatialLayoutAnalyzer::AnalyzePageLayout(
                     if (ch->size > max_header_font) {
                         max_header_font = ch->size;
                     }
-                    line_header_text += static_cast<char>(ch->c);
+                    int code = ch->c;
+                    if (code >= 0 && code <= 0x7F) {
+                        line_header_text.push_back(static_cast<char>(code));
+                    } else if (code >= 0x80 && code <= 0x7FF) {
+                        line_header_text.push_back(static_cast<char>(0xC0 | ((code >> 6) & 0x1F)));
+                        line_header_text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                    } else if (code >= 0x800 && code <= 0xFFFF) {
+                        if (code >= 0xD800 && code <= 0xDFFF) {
+                            line_header_text.append("\xEF\xBF\xBD", 3);
+                        } else {
+                            line_header_text.push_back(static_cast<char>(0xE0 | ((code >> 12) & 0x0F)));
+                            line_header_text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                            line_header_text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                        }
+                    } else if (code >= 0x10000 && code <= 0x10FFFF) {
+                        line_header_text.push_back(static_cast<char>(0xF0 | ((code >> 18) & 0x07)));
+                        line_header_text.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+                        line_header_text.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                        line_header_text.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                    } else {
+                        line_header_text.append("\xEF\xBF\xBD", 3);
+                    }
                     features.header_bboxes.push_back(norm_box);
                 } else {
                     body_chars++;
                 }
+
             }
 
             if (line_in_header) {
