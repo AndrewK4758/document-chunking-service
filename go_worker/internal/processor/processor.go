@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -190,6 +191,32 @@ func (p *ChunkingProcessor) processSingleDoc(ctx context.Context, req *pb.ChunkD
 	}, nil
 }
 
+// DetectMimeType inspects leading magic bytes to identify document formats.
+func DetectMimeType(data []byte) string {
+	if len(data) >= 5 && bytes.HasPrefix(data, []byte("%PDF-")) {
+		return "application/pdf"
+	}
+	if len(data) >= 4 && (bytes.HasPrefix(data, []byte{0x49, 0x49, 0x2A, 0x00}) || bytes.HasPrefix(data, []byte{0x4D, 0x4D, 0x00, 0x2A})) {
+		return "image/tiff"
+	}
+	if len(data) >= 8 && bytes.HasPrefix(data, []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) {
+		return "image/png"
+	}
+	if len(data) >= 3 && bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}) {
+		return "image/jpeg"
+	}
+	if len(data) >= 4 && bytes.HasPrefix(data, []byte{0x50, 0x4B, 0x03, 0x04}) {
+		return "application/zip"
+	}
+	if len(data) > 0 {
+		detected := http.DetectContentType(data)
+		if detected != "" && detected != "application/octet-stream" {
+			return strings.Split(detected, ";")[0]
+		}
+	}
+	return "application/octet-stream"
+}
+
 func (p *ChunkingProcessor) InspectDocument(ctx context.Context, req *pb.ExecuteTaskRequest, docUri string, addTrace func(string, string)) (*structpb.Struct, error) {
 	if p.Store == nil {
 		return nil, fmt.Errorf("[Step: INSPECT, URI: %s] store manager not configured", docUri)
@@ -220,15 +247,32 @@ func (p *ChunkingProcessor) InspectDocument(ctx context.Context, req *pb.Execute
 	}
 	tmpFile.Close()
 
-	isScanned, err := detectIsScannedPDF(tmpFile.Name())
-	if err != nil {
-		addTrace(fmt.Sprintf("detectIsScannedPDF failed (assuming scanned): %v", err), "WARN")
+	header := make([]byte, 512)
+	f, openErr := os.Open(tmpFile.Name())
+	var mimeType string
+	if openErr == nil {
+		n, _ := io.ReadFull(f, header)
+		f.Close()
+		mimeType = DetectMimeType(header[:n])
+	} else {
+		mimeType = "application/octet-stream"
+	}
+
+	var isScanned bool
+	if mimeType == "application/pdf" {
+		var scanErr error
+		isScanned, scanErr = detectIsScannedPDF(tmpFile.Name())
+		if scanErr != nil {
+			addTrace(fmt.Sprintf("detectIsScannedPDF failed (assuming scanned): %v", scanErr), "WARN")
+			isScanned = true
+		}
+	} else {
+		// All raster image and non-PDF document formats are treated as scanned
 		isScanned = true
 	}
 
-	// We don't have IsMultiDocument logic here yet, we'll assume false or let downstream handle it.
-	// But we'll return IsScanned.
 	resultMap := map[string]interface{}{
+		"MimeType":        mimeType,
 		"IsScanned":       isScanned,
 		"IsMultiDocument": false,
 	}
@@ -238,7 +282,7 @@ func (p *ChunkingProcessor) InspectDocument(ctx context.Context, req *pb.Execute
 		return nil, fmt.Errorf("[Step: INSPECT, URI: %s] failed to create structpb: %w", docUri, err)
 	}
 
-	addTrace(fmt.Sprintf("Document inspected. IsScanned: %v", isScanned), "INFO")
+	addTrace(fmt.Sprintf("Document inspected. MimeType: %s, IsScanned: %v", mimeType, isScanned), "INFO")
 	return structResult, nil
 }
 
@@ -639,6 +683,17 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 					normVal = span.GetText()
 				}
 				addTrace(fmt.Sprintf("Normalized span label %q→%q matched %q value %q→%q", span.GetLabel(), canonical, matched, span.GetText(), normVal), "DEBUG")
+			}
+
+			if rep := resp.GetResidualReport(); rep != nil {
+				if !rep.GetIsConverged() {
+					addTrace(fmt.Sprintf("[SWEEP: DELTA] Pass %d unconverged with %d residual values (samples: %v)", rep.GetPassCount(), rep.GetResidualValueCount(), rep.GetResidualSamples()), "WARN")
+					if rep.GetPassCount() >= 3 {
+						return nil, traceEvents, fmt.Errorf("[SEAM: LINEAGE_GAP] convergence loop exhausted maximum iterations (%d passes) without eliminating residuals for %s", rep.GetPassCount(), docUri)
+					}
+				} else {
+					addTrace(fmt.Sprintf("[SWEEP: CONVERGED] Document %s converged in pass %d (0 residuals)", docUri, rep.GetPassCount()), "INFO")
+				}
 			}
 
 			processedDocs = append(processedDocs, &pb.ProcessedDocument{

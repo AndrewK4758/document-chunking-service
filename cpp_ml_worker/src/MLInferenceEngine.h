@@ -42,7 +42,8 @@ public:
     virtual std::vector<fz_rect> CalculateRedactionBBoxes(
         const std::string& text,
         const std::vector<fz_rect>& char_bboxes,
-        std::span<const std::string> dynamic_labels
+        std::span<const std::string> dynamic_labels,
+        float threshold_override = -1.0f
     ) = 0;
 
     virtual std::vector<ml::worker::v1::ExtractedSpan> CalculateExtractedSpans(
@@ -56,6 +57,30 @@ public:
     ) = 0;
 };
 
+namespace doc_processor {
+    struct InferenceWordSpan {
+        std::string text;
+        size_t start_char{0};
+        size_t end_char{0};
+        fz_rect bbox{fz_empty_rect};
+    };
+
+    struct CandidateKey {
+        size_t start_word{0};
+        size_t end_word{0};
+        std::string label;
+
+        bool operator<(const CandidateKey& other) const {
+            return std::tie(start_word, end_word, label) < std::tie(other.start_word, other.end_word, other.label);
+        }
+    };
+
+    struct InferenceContext {
+        std::vector<InferenceWordSpan> words;
+        std::map<CandidateKey, float> candidate_map;
+    };
+}
+
 class MLInferenceEngine : public IMLInferenceEngine {
 public:
     MLInferenceEngine(std::unique_ptr<ITokenizer> tokenizer, std::unique_ptr<IOnnxRunner> onnx_runner);
@@ -63,7 +88,8 @@ public:
     std::vector<fz_rect> CalculateRedactionBBoxes(
         const std::string& text,
         const std::vector<fz_rect>& char_bboxes,
-        std::span<const std::string> dynamic_labels
+        std::span<const std::string> dynamic_labels,
+        float threshold_override = -1.0f
     ) override;
 
     std::vector<ml::worker::v1::ExtractedSpan> CalculateExtractedSpans(
@@ -79,6 +105,13 @@ public:
     [[nodiscard]] static float ResolveConfidenceThreshold(float threshold_override);
 
 private:
+    doc_processor::InferenceContext RunInferencePipeline(
+        const std::string& text,
+        const std::vector<fz_rect>& char_bboxes,
+        std::span<const std::string> dynamic_labels,
+        float threshold_override
+    );
+
     std::unique_ptr<ITokenizer> tokenizer_;
     std::unique_ptr<IOnnxRunner> onnx_runner_;
 };

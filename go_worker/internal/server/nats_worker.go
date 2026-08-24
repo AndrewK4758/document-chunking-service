@@ -558,7 +558,28 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 	}
 
 	resultMap := map[string]interface{}{
-		"redacted_document_uri": payload.Storage.DocumentUri,	}
+		"redacted_document_uri": payload.Storage.DocumentUri,
+	}
+
+	if rep := resp.GetResidualReport(); rep != nil {
+		if !rep.GetIsConverged() {
+			logger.Warn("DocProcessor", "[SWEEP: DELTA] Pass %d unconverged with %d residual values (samples: %v) for JobID %s", rep.GetPassCount(), rep.GetResidualValueCount(), rep.GetResidualSamples(), identity.GetJobId())
+			if rep.GetPassCount() >= 3 {
+				panic(fmt.Errorf("[SEAM: LINEAGE_GAP] convergence loop exhausted maximum iterations (%d passes) without eliminating residuals for JobID %s", rep.GetPassCount(), identity.GetJobId()))
+			}
+		}
+		rawSamples := rep.GetResidualSamples()
+		samples := make([]interface{}, len(rawSamples))
+		for i, sample := range rawSamples {
+			samples[i] = sample
+		}
+		resultMap["residual_report"] = map[string]interface{}{
+			"is_converged":         rep.GetIsConverged(),
+			"residual_value_count": rep.GetResidualValueCount(),
+			"residual_samples":     samples,
+			"pass_count":           rep.GetPassCount(),
+		}
+	}
 
 	resStruct, structErr := structpb.NewStruct(resultMap)
 	if structErr != nil {

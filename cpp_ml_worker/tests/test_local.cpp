@@ -56,6 +56,9 @@ int main(int argc, char** argv) {
         auto onnx_runner = CreateRealOnnxRunner(model_path);
         MLInferenceEngine engine(std::move(tokenizer), std::move(onnx_runner));
 
+        std::map<int, std::vector<fz_rect>> per_page_boxes;
+        std::vector<std::string> target_plaintexts;
+
         for (int i = 0; i < page_count; i++) {
             spdlog::info("\n--- Processing Page {} ---", i+1);
             auto extracted = mupdf.ExtractPageText(i);
@@ -79,6 +82,15 @@ int main(int argc, char** argv) {
                 auto& bbox = redaction_bboxes[j];
                 spdlog::info("  - Block {}: ({}, {}) to ({}, {})", j, bbox.x0, bbox.y0, bbox.x1, bbox.y1);
             }
+
+            if (!redaction_bboxes.empty()) {
+                per_page_boxes[i] = redaction_bboxes;
+                if (!text.empty()) {
+                    size_t ws = text.find(' ');
+                    std::string preview = (ws == std::string::npos) ? text.substr(0, 16) : text.substr(0, std::min<size_t>(ws, 16));
+                    if (!preview.empty()) target_plaintexts.push_back(preview);
+                }
+            }
             
             spdlog::info("Applying redactions to PDF...");
             mupdf.ApplyRedactions(i, redaction_bboxes);
@@ -86,6 +98,15 @@ int main(int argc, char** argv) {
 
         spdlog::info("\nGenerating redacted PDF...");
         std::string redacted_pdf = mupdf.GetRedactedPdf();
+
+        spdlog::info("\nVerifying post-redaction zero-trust oracle...");
+        auto report = mupdf.VerifyPostRedaction(redacted_pdf, per_page_boxes, target_plaintexts, "local-reyes-cds", "", 1);
+        if (report.is_converged) {
+            spdlog::info("Post-redaction verification PASSED: 0 surviving glyphs, 0 surviving bytes!");
+        } else {
+            spdlog::error("Post-redaction verification FAILED: {} residuals detected!", report.residual_value_count);
+            return 1;
+        }
         
         std::string out_path = pdf_path + ".redacted.pdf";
         std::ofstream out_file(out_path, std::ios::binary);

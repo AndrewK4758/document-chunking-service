@@ -91,26 +91,6 @@ namespace doc_processor {
     }
 }
 
-namespace {
-    struct WordSpan {
-        std::string text;
-        size_t start_char;
-        size_t end_char;
-        fz_rect bbox;
-    };
-
-    struct CandidateKey {
-
-        size_t start_word;
-        size_t end_word;
-        std::string label;
-
-        bool operator<(const CandidateKey& other) const {
-            return std::tie(start_word, end_word, label) < std::tie(other.start_word, other.end_word, other.label);
-        }
-    };
-}
-
 float MLInferenceEngine::ResolveConfidenceThreshold(float threshold_override) {
     if (threshold_override >= 0.0f && threshold_override <= 1.0f) {
         return threshold_override;
@@ -126,29 +106,16 @@ float MLInferenceEngine::ResolveConfidenceThreshold(float threshold_override) {
     return 0.50f;
 }
 
-std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtractedSpans(
+doc_processor::InferenceContext MLInferenceEngine::RunInferencePipeline(
     const std::string& text,
     const std::vector<fz_rect>& char_bboxes,
     std::span<const std::string> dynamic_labels,
-    int page_number,
-    float page_width,
-    float page_height,
     float threshold_override
 ) {
-    if (text.size() != char_bboxes.size()) {
-        throw std::invalid_argument("Text length does not match character bounding boxes length");
-    }
-    if (page_width <= 0.0f || page_height <= 0.0f) {
-        throw std::invalid_argument("Page dimensions must be positive");
-    }
-    if (text.empty() || dynamic_labels.empty()) {
-        return {};
-    }
-
     float threshold = ResolveConfidenceThreshold(threshold_override);
 
     // 1. Extract words and corresponding bounding boxes using punctuation-aware tokenization (\w+(?:[-_]\w+)*|\S)
-    std::vector<WordSpan> words;
+    std::vector<doc_processor::InferenceWordSpan> words;
     size_t n = text.size();
     size_t char_pos = 0;
 
@@ -202,7 +169,7 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
     constexpr size_t WINDOW_OVERLAP = 64;
     constexpr size_t WINDOW_STEP = WINDOW_SIZE - WINDOW_OVERLAP;
 
-    std::map<CandidateKey, float> candidate_map;
+    std::map<doc_processor::CandidateKey, float> candidate_map;
 
     // Hoist scratchpad string buffers with reserve(4096) per MPL-316 §5.4
     std::string label_scratch;
@@ -223,6 +190,12 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
             input_ids.push_back(128002); // <<ENT>>
             doc_processor::SanitizeUtf8(label, label_scratch);
             std::vector<int32_t> l_tokens = tokenizer_->Encode(label_scratch);
+            if (!l_tokens.empty() && l_tokens.front() == 1) {
+                l_tokens.erase(l_tokens.begin());
+            }
+            if (!l_tokens.empty() && l_tokens.back() == 2) {
+                l_tokens.pop_back();
+            }
             for (int32_t t : l_tokens) {
                 input_ids.push_back(t);
             }
@@ -235,6 +208,12 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
             const auto& w = words[wi];
             doc_processor::SanitizeUtf8(w.text, word_scratch);
             std::vector<int32_t> w_tokens = tokenizer_->Encode(word_scratch);
+            if (!w_tokens.empty() && w_tokens.front() == 1) {
+                w_tokens.erase(w_tokens.begin());
+            }
+            if (!w_tokens.empty() && w_tokens.back() == 2) {
+                w_tokens.pop_back();
+            }
             int64_t word_idx = static_cast<int64_t>(wi - window_start + 1);
 
             if (w_tokens.empty()) {
@@ -300,7 +279,7 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
                     float logit = logits_md[span, c];
                     float conf = 1.0f / (1.0f + std::exp(-logit));
                     if (conf >= threshold) {
-                        CandidateKey key{window_start + start_word, window_start + end_word, dynamic_labels[c]};
+                        doc_processor::CandidateKey key{window_start + start_word, window_start + end_word, dynamic_labels[c]};
                         auto it = candidate_map.find(key);
                         if (it == candidate_map.end() || conf > it->second) {
                             candidate_map[key] = conf;
@@ -316,17 +295,41 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
         window_start += (num_total_words > WINDOW_SIZE ? WINDOW_STEP : num_total_words);
     }
 
-    std::vector<ml::worker::v1::ExtractedSpan> results;
-    results.reserve(candidate_map.size());
+    return {std::move(words), std::move(candidate_map)};
+}
 
-    for (const auto& [cand_key, conf] : candidate_map) {
+std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtractedSpans(
+    const std::string& text,
+    const std::vector<fz_rect>& char_bboxes,
+    std::span<const std::string> dynamic_labels,
+    int page_number,
+    float page_width,
+    float page_height,
+    float threshold_override
+) {
+    if (text.size() != char_bboxes.size()) {
+        throw std::invalid_argument("Text length does not match character bounding boxes length");
+    }
+    if (page_width <= 0.0f || page_height <= 0.0f) {
+        throw std::invalid_argument("Page dimensions must be positive");
+    }
+    if (text.empty() || dynamic_labels.empty()) {
+        return {};
+    }
+
+    auto ctx = RunInferencePipeline(text, char_bboxes, dynamic_labels, threshold_override);
+
+    std::vector<ml::worker::v1::ExtractedSpan> results;
+    results.reserve(ctx.candidate_map.size());
+
+    for (const auto& [cand_key, conf] : ctx.candidate_map) {
         fz_rect union_box = fz_empty_rect;
         for (size_t wi = cand_key.start_word; wi <= cand_key.end_word; ++wi) {
-            if (!fz_is_empty_rect(words[wi].bbox)) {
+            if (!fz_is_empty_rect(ctx.words[wi].bbox)) {
                 if (fz_is_empty_rect(union_box)) {
-                    union_box = words[wi].bbox;
+                    union_box = ctx.words[wi].bbox;
                 } else {
-                    union_box = fz_union_rect(union_box, words[wi].bbox);
+                    union_box = fz_union_rect(union_box, ctx.words[wi].bbox);
                 }
             }
         }
@@ -341,8 +344,8 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
         float norm_y0 = std::clamp(ry0 / page_height, 0.0f, 1.0f);
         float norm_y1 = std::clamp(ry1 / page_height, 0.0f, 1.0f);
 
-        size_t text_start = words[cand_key.start_word].start_char;
-        size_t text_end = words[cand_key.end_word].end_char;
+        size_t text_start = ctx.words[cand_key.start_word].start_char;
+        size_t text_end = ctx.words[cand_key.end_word].end_char;
         std::string span_text = text.substr(text_start, text_end - text_start);
 
         ml::worker::v1::ExtractedSpan span;
@@ -364,7 +367,8 @@ std::vector<ml::worker::v1::ExtractedSpan> MLInferenceEngine::CalculateExtracted
 std::vector<fz_rect> MLInferenceEngine::CalculateRedactionBBoxes(
     const std::string& text,
     const std::vector<fz_rect>& char_bboxes,
-    std::span<const std::string> dynamic_labels
+    std::span<const std::string> dynamic_labels,
+    float threshold_override
 ) {
     if (text.size() != char_bboxes.size()) {
         throw std::invalid_argument("Text length does not match character bounding boxes length");
@@ -373,25 +377,38 @@ std::vector<fz_rect> MLInferenceEngine::CalculateRedactionBBoxes(
         return {};
     }
 
-    auto extracted_spans = CalculateExtractedSpans(
-        text,
-        char_bboxes,
-        dynamic_labels,
-        1,
-        1000.0f,
-        1000.0f
-    );
+    auto ctx = RunInferencePipeline(text, char_bboxes, dynamic_labels, threshold_override);
 
     std::vector<fz_rect> redaction_bboxes;
-    redaction_bboxes.reserve(extracted_spans.size());
+    redaction_bboxes.reserve(ctx.candidate_map.size());
 
-    for (const auto& span : extracted_spans) {
-        fz_rect rect;
-        rect.x0 = span.x0() * 1000.0f;
-        rect.y0 = span.y0() * 1000.0f;
-        rect.x1 = span.x1() * 1000.0f;
-        rect.y1 = span.y1() * 1000.0f;
-        redaction_bboxes.push_back(rect);
+    for (const auto& [cand_key, conf] : ctx.candidate_map) {
+        fz_rect union_box = fz_empty_rect;
+        for (size_t wi = cand_key.start_word; wi <= cand_key.end_word; ++wi) {
+            if (!fz_is_empty_rect(ctx.words[wi].bbox)) {
+                if (fz_is_empty_rect(union_box)) {
+                    union_box = ctx.words[wi].bbox;
+                } else {
+                    union_box = fz_union_rect(union_box, ctx.words[wi].bbox);
+                }
+            }
+        }
+
+        if (fz_is_empty_rect(union_box)) {
+            continue;
+        }
+
+        float rx0 = std::min(union_box.x0, union_box.x1);
+        float rx1 = std::max(union_box.x0, union_box.x1);
+        float ry0 = std::min(union_box.y0, union_box.y1);
+        float ry1 = std::max(union_box.y0, union_box.y1);
+
+        if (rx0 >= rx1 || ry0 >= ry1) {
+            continue;
+        }
+
+        fz_rect exact_box{rx0, ry0, rx1, ry1};
+        redaction_bboxes.push_back(exact_box);
     }
 
     return redaction_bboxes;
@@ -467,7 +484,6 @@ namespace {
             intra_threads_ = intra;
             inter_threads_ = inter;
 
-            bool session_created = false;
             try {
                 Ort::SessionOptions cuda_opts;
                 ConfigureSessionOptions(cuda_opts, intra_threads_, inter_threads_);
@@ -518,35 +534,16 @@ namespace {
 
                 cuda_opts.AppendExecutionProvider_CUDA_V2(*cuda_provider_opts);
                 session_ = std::make_unique<Ort::Session>(env_, path.c_str(), cuda_opts);
-                session_created = true;
                 cuda_selected_ = true;
-                spdlog::info("ONNX EP selected: CUDA device {}, ORT_ENABLE_ALL (intra={}, inter={})", device_id, intra_threads_, inter_threads_);
+                spdlog::info("ONNX EP initialized: CUDA device {} (Blackwell SM120), ORT_ENABLE_ALL (intra={}, inter={})", device_id, intra_threads_, inter_threads_);
             } catch (const std::exception& e) {
-                spdlog::warn("CUDA Execution Provider initialization unavailable: {}. Falling back to CPU Execution Provider.", e.what());
+                spdlog::critical("FATAL: CUDA Execution Provider initialization failed: {}. Fallbacks are strictly forbidden per GEMINI.md.", e.what());
+                throw std::runtime_error(std::string("CUDA Execution Provider initialization failed: ") + e.what());
             }
 
-            if (!session_created) {
-                try {
-                    Ort::SessionOptions cpu_opts;
-                    ConfigureSessionOptions(cpu_opts, intra_threads_, inter_threads_);
-                    session_ = std::make_unique<Ort::Session>(env_, path.c_str(), cpu_opts);
-                    session_created = true;
-                    cuda_selected_ = false;
-                    spdlog::info("ONNX EP selected: CPU, ORT_ENABLE_ALL (intra={}, inter={})", intra_threads_, inter_threads_);
-                } catch (const Ort::Exception& e) {
-                    throw std::runtime_error("Failed to load ONNX model: " + std::string(e.what()));
-                }
-            }
-
-            if (cuda_selected_) {
-                pinned_info_ = std::make_unique<Ort::MemoryInfo>(
-                    Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeCPU)
-                );
-            } else {
-                pinned_info_ = std::make_unique<Ort::MemoryInfo>(
-                    Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtDeviceAllocator, OrtMemType::OrtMemTypeDefault)
-                );
-            }
+            pinned_info_ = std::make_unique<Ort::MemoryInfo>(
+                Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeCPU)
+            );
 
             PreallocateEnvelope();
         }
@@ -602,8 +599,8 @@ namespace {
             auto span_mask_val = Ort::Value::CreateTensor(*pinned_info_, span_mask_buf_.data(), spans.num_spans, span_mask_shape, 2, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
 
             size_t total_logits = spans.num_spans * num_classes;
-            int64_t logits_shape[2] = {static_cast<int64_t>(spans.num_spans), static_cast<int64_t>(num_classes)};
-            auto logits_val = Ort::Value::CreateTensor<float>(*pinned_info_, logits_buf_.data(), total_logits, logits_shape, 2);
+            int64_t logits_shape[4] = {1, static_cast<int64_t>(num_words), 12, static_cast<int64_t>(num_classes)};
+            auto logits_val = Ort::Value::CreateTensor<float>(*pinned_info_, logits_buf_.data(), total_logits, logits_shape, 4);
 
             Ort::IoBinding binding(*session_);
             binding.BindInput("input_ids", token_val);

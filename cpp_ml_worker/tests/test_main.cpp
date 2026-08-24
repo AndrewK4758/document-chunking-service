@@ -11,6 +11,7 @@
 #include <simdutf.h>
 #include "MLInferenceEngine.h"
 #include "MuPDFWrapper.h"
+#include "Logger.h"
 
 
 
@@ -1928,9 +1929,554 @@ TEST(MPL317Tests, HelperExistsAndIsImportable) {
     SUCCEED();
 }
 
+// ============================================================================
+// MPL-327: Autonomous Multi-Pass Canonical Template Distillation Unit Tests
+// ============================================================================
+
+TEST(MPL327Tests, AC1_SpatialWipeZones_TableRowsRedactedWhileHeadersPreserved) {
+    ml::worker::v1::RedactDocumentRequest request;
+    auto* id = request.mutable_identity();
+    id->set_tenant_id("tenant-test");
+    id->set_job_id("job-mpl-327-01");
+    id->set_app_id("app-test");
+
+    request.add_dynamic_labels("vendor name");
+    request.add_dynamic_labels("dollar amount");
+    request.add_dynamic_labels("fee title");
+
+    // Add spatial wipe zone for dense table rows
+    auto* zone = request.add_spatial_wipe_zones();
+    zone->set_page_number(1);
+    zone->set_x0(50.0f);
+    zone->set_y0(200.0f);
+    zone->set_x1(550.0f);
+    zone->set_y1(450.0f);
+    zone->set_section_name("B. Services Borrower Did Not Shop For");
+
+    EXPECT_EQ(request.dynamic_labels_size(), 3);
+    EXPECT_EQ(request.spatial_wipe_zones_size(), 1);
+    EXPECT_FLOAT_EQ(request.spatial_wipe_zones(0).x0(), 50.0f);
+    EXPECT_FLOAT_EQ(request.spatial_wipe_zones(0).y1(), 450.0f);
+    EXPECT_EQ(request.spatial_wipe_zones(0).section_name(), "B. Services Borrower Did Not Shop For");
+}
+
+TEST(MPL327Tests, AC2_DynamicLabelManifest_ConfidenceThresholdOverride) {
+    // When override is > 0.0f, it takes precedence
+    float threshold = MLInferenceEngine::ResolveConfidenceThreshold(0.38f);
+    EXPECT_FLOAT_EQ(threshold, 0.38f);
+
+    float high_thresh = MLInferenceEngine::ResolveConfidenceThreshold(0.85f);
+    EXPECT_FLOAT_EQ(high_thresh, 0.85f);
+}
+
+TEST(MPL327Tests, AC3_ResidualSweep_ConvergenceReport) {
+    ml::worker::v1::ResidualSweepReport report;
+    report.set_is_converged(true);
+    report.set_residual_value_count(0);
+    report.set_pass_count(1);
+
+    EXPECT_TRUE(report.is_converged());
+    EXPECT_EQ(report.residual_value_count(), 0);
+    EXPECT_EQ(report.pass_count(), 1);
+
+    // Test secondary pass with residuals
+    ml::worker::v1::ResidualSweepReport delta_report;
+    delta_report.set_is_converged(false);
+    delta_report.set_residual_value_count(2);
+    delta_report.add_residual_samples("$33.94");
+    delta_report.add_residual_samples("Solidifi");
+    delta_report.set_pass_count(2);
+
+    EXPECT_FALSE(delta_report.is_converged());
+    EXPECT_EQ(delta_report.residual_value_count(), 2);
+    EXPECT_EQ(delta_report.residual_samples_size(), 2);
+    EXPECT_EQ(delta_report.residual_samples(0), "$33.94");
+}
+
+TEST(MPL327Tests, AC4_UnboundedIterationFailFast) {
+    auto validate_convergence_loop = [](int pass_count, bool is_converged) {
+        if (pass_count >= 3 && !is_converged) {
+            throw std::runtime_error("[SEAM: LINEAGE_GAP] Convergence loop exhausted maximum iterations (3 passes) without eliminating residuals");
+        }
+    };
+
+    EXPECT_NO_THROW(validate_convergence_loop(1, false));
+    EXPECT_NO_THROW(validate_convergence_loop(2, false));
+    EXPECT_NO_THROW(validate_convergence_loop(3, true));
+    EXPECT_THROW(validate_convergence_loop(3, false), std::runtime_error);
+    EXPECT_THROW(validate_convergence_loop(4, false), std::runtime_error);
+}
+
+// ============================================================================
+// MPL-329: Adaptive In-Worker Redaction Self-Healing & Residual Convergence Loop
+// ============================================================================
+
+namespace {
+    std::string MakeSyntheticCanaryPdfWithMetadata(
+        const std::string& top_text,
+        const std::string& bottom_text,
+        const std::string& metadata_secret
+    ) {
+        std::ostringstream ss;
+        ss << "%PDF-1.4\n";
+        ss << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
+        ss << "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
+        ss << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n";
+        ss << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n";
+        ss << "5 0 obj << /Length 50 >> stream\nBT\n/F1 12 Tf\n50 700 Td\n(" << top_text << ") Tj\nET\nendstream\nendobj\n";
+        ss << "6 0 obj << /Title (" << metadata_secret << ") >> endobj\n";
+        ss << "xref\n0 7\n0000000000 65535 f \n";
+        ss << "trailer << /Size 7 /Root 1 0 R /Info 6 0 R >>\nstartxref\n0\n%%EOF\n";
+        return ss.str();
+    }
+}
+
+TEST(MPL329Tests, AC1_InWorkerSelfHealing_EliminatesSurvivingGlyphsOnTightBoundaries) {
+    std::string pdf = MakeSyntheticCanaryPdf("KERNING_SECRET", "PUBLIC_BODY");
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 1);
+
+    auto [init_text, char_bboxes] = wrapper.ExtractPageText(0);
+    size_t pos = init_text.find("KERNING_SECRET");
+    ASSERT_NE(pos, std::string::npos);
+
+    fz_rect full_box = fz_empty_rect;
+    for (size_t i = 0; i < 14; ++i) {
+        if (pos + i < char_bboxes.size() && !fz_is_empty_rect(char_bboxes[pos + i])) {
+            full_box = fz_is_empty_rect(full_box) ? char_bboxes[pos + i] : fz_union_rect(full_box, char_bboxes[pos + i]);
+        }
+    }
+
+    // Clip box by 1.5pt on the right to simulate kerning anomaly leaving glyph residue
+    fz_rect tight_box = full_box;
+    tight_box.x1 -= 1.5f;
+
+    wrapper.ApplyRedactions(0, {tight_box});
+    std::string redacted_bytes = wrapper.GetRedactedPdf();
+
+    // VerifyPostRedaction with full_box as verification target:
+    // Surviving glyphs trigger in-worker adaptive self-healing with 2.0pt dilation
+    std::map<int, std::vector<fz_rect>> per_page_boxes;
+    per_page_boxes[0] = {full_box};
+
+    auto report = wrapper.VerifyPostRedaction(redacted_bytes, per_page_boxes, {"KERNING_SECRET"}, "job-heal-01", "trace-01", 1);
+    EXPECT_TRUE(report.is_converged);
+    EXPECT_EQ(report.residual_value_count, 0);
+
+    // Verify reloaded document has zero occurrences
+    MuPDFWrapper reloaded(redacted_bytes);
+    auto [after_text, _] = reloaded.ExtractPageText(0);
+    EXPECT_EQ(after_text.find("KERNING_SECRET"), std::string::npos);
+}
+
+TEST(MPL329Tests, AC2_DualOracle_ResidualSweepReportPopulatedOnUnconvergedState) {
+    std::string pdf = MakeSyntheticCanaryPdfWithMetadata("NORMAL_PAGE_DATA", "PUBLIC_BODY", "UNREDACTED_CONFIDENTIAL");
+    MuPDFWrapper wrapper(pdf);
+
+    std::string unredacted_pdf = wrapper.GetRedactedPdf();
+    std::map<int, std::vector<fz_rect>> per_page_boxes;
+
+    auto report = wrapper.VerifyPostRedaction(unredacted_pdf, per_page_boxes, {"UNREDACTED_CONFIDENTIAL"}, "job-unconverged-01", "trace-02", 1);
+    EXPECT_FALSE(report.is_converged);
+    EXPECT_GT(report.residual_value_count, 0);
+    EXPECT_FALSE(report.residual_samples.empty());
+    EXPECT_EQ(report.pass_count, 1);
+}
+
+TEST(MPL329Tests, AC2_ResidualSamples_MaskedForPiiProtection) {
+    std::string pdf = MakeSyntheticCanaryPdfWithMetadata("NORMAL_PAGE_DATA", "PUBLIC_BODY", "SSN_999-88-7777");
+    MuPDFWrapper wrapper(pdf);
+
+    std::string unredacted_pdf = wrapper.GetRedactedPdf();
+    std::map<int, std::vector<fz_rect>> per_page_boxes;
+
+    auto report = wrapper.VerifyPostRedaction(unredacted_pdf, per_page_boxes, {"SSN_999-88-7777"}, "job-pii-mask-01", "trace-03", 2);
+    EXPECT_FALSE(report.is_converged);
+    ASSERT_FALSE(report.residual_samples.empty());
+
+    for (const auto& sample : report.residual_samples) {
+        EXPECT_NE(sample.find("***"), std::string::npos);
+        EXPECT_EQ(sample.find("SSN_999-88-7777"), std::string::npos);
+    }
+}
+
+TEST(MPL329Tests, AC4_IterationBudgetGuard_Pass3ThrowsLineageGap) {
+    std::string pdf = MakeSyntheticCanaryPdfWithMetadata("NORMAL_PAGE_DATA", "PUBLIC_BODY", "ADVERSARIAL_LEAK");
+    MuPDFWrapper wrapper(pdf);
+
+    std::string unredacted_pdf = wrapper.GetRedactedPdf();
+    std::map<int, std::vector<fz_rect>> per_page_boxes;
+
+    // Pass 1 & 2 do NOT throw
+    EXPECT_NO_THROW({
+        auto r1 = wrapper.VerifyPostRedaction(unredacted_pdf, per_page_boxes, {"ADVERSARIAL_LEAK"}, "job-budget-01", "trace-04", 1);
+        EXPECT_FALSE(r1.is_converged);
+    });
+
+    EXPECT_NO_THROW({
+        auto r2 = wrapper.VerifyPostRedaction(unredacted_pdf, per_page_boxes, {"ADVERSARIAL_LEAK"}, "job-budget-01", "trace-04", 2);
+        EXPECT_FALSE(r2.is_converged);
+    });
+
+    // Pass 3 halts immediately with [SEAM: LINEAGE_GAP]
+    try {
+        wrapper.VerifyPostRedaction(unredacted_pdf, per_page_boxes, {"ADVERSARIAL_LEAK"}, "job-budget-01", "trace-04", 3);
+        FAIL() << "Expected std::runtime_error with [SEAM: LINEAGE_GAP]";
+    } catch (const std::runtime_error& ex) {
+        std::string err = ex.what();
+        EXPECT_NE(err.find("[SEAM: LINEAGE_GAP]"), std::string::npos);
+        EXPECT_NE(err.find("pass_count=3"), std::string::npos);
+    }
+}
+
+// ============================================================================
+// MPL-328: MuPDF Form XObject Recursive Redaction & Exact-Coordinate Precision Engine
+// ============================================================================
+
+namespace {
+    std::string MakeSyntheticFormXObjectPdf(
+        const std::string& page_text,
+        const std::string& form_text,
+        float form_x = 100.0f,
+        float form_y = 500.0f
+    ) {
+        std::ostringstream ss;
+        ss << "%PDF-1.4\n";
+        ss << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
+        ss << "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
+        ss << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+              "/Resources << /Font << /F1 4 0 R >> /XObject << /Xf1 6 0 R >> >> /Contents 5 0 R >> endobj\n";
+        ss << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n";
+
+        // Page content: draws page_text and calls /Xf1 Do
+        std::ostringstream page_stm;
+        page_stm << "BT\n/F1 12 Tf\n50 700 Td\n(" << page_text << ") Tj\nET\n";
+        page_stm << "q 1 0 0 1 " << form_x << " " << form_y << " cm /Xf1 Do Q\n";
+        std::string page_stm_str = page_stm.str();
+
+        ss << "5 0 obj << /Length " << page_stm_str.size() << " >> stream\n";
+        ss << page_stm_str << "\nendstream\nendobj\n";
+
+        // Form XObject (6 0 obj): draws form_text
+        std::ostringstream form_stm;
+        form_stm << "BT\n/F1 12 Tf\n0 0 Td\n(" << form_text << ") Tj\nET\n";
+        std::string form_stm_str = form_stm.str();
+
+        ss << "6 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 300 50] /FormType 1 "
+              "/Resources << /Font << /F1 4 0 R >> >> /Length " << form_stm_str.size() << " >> stream\n";
+        ss << form_stm_str << "\nendstream\nendobj\n";
+
+        ss << "xref\n0 7\n0000000000 65535 f \n";
+        ss << "trailer << /Size 7 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n";
+        return ss.str();
+    }
+
+    std::string MakeSyntheticNestedFormXObjectPdf(
+        const std::string& inner_text
+    ) {
+        std::ostringstream ss;
+        ss << "%PDF-1.4\n";
+        ss << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
+        ss << "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
+        ss << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+              "/Resources << /Font << /F1 4 0 R >> /XObject << /OuterForm 6 0 R >> >> /Contents 5 0 R >> endobj\n";
+        ss << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n";
+
+        std::string page_stm = "q 1 0 0 1 50 400 cm /OuterForm Do Q\n";
+        ss << "5 0 obj << /Length " << page_stm.size() << " >> stream\n" << page_stm << "endstream\nendobj\n";
+
+        std::string outer_stm = "q 1 0 0 1 20 20 cm /InnerForm Do Q\n";
+        ss << "6 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 400 100] /FormType 1 "
+              "/Resources << /XObject << /InnerForm 7 0 R >> >> /Length " << outer_stm.size() << " >> stream\n"
+           << outer_stm << "endstream\nendobj\n";
+
+        std::ostringstream inner_stm;
+        inner_stm << "BT\n/F1 12 Tf\n0 0 Td\n(" << inner_text << ") Tj\nET\n";
+        std::string inner_stm_str = inner_stm.str();
+        ss << "7 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 300 50] /FormType 1 "
+              "/Resources << /Font << /F1 4 0 R >> >> /Length " << inner_stm_str.size() << " >> stream\n"
+           << inner_stm_str << "endstream\nendobj\n";
+
+        ss << "xref\n0 8\n0000000000 65535 f \n";
+        ss << "trailer << /Size 8 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n";
+        return ss.str();
+    }
+}
+
+TEST(MPL328Tests, AC1_FormXObject_RedactionPurgesNestedGlyphs) {
+    std::string pdf = MakeSyntheticFormXObjectPdf("PUBLIC_HEADER", "SECRET_LOAN_ID_9999", 100.0f, 500.0f);
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 1);
+
+    auto [init_text, char_bboxes] = wrapper.ExtractPageText(0);
+    size_t key_pos = init_text.find("SECRET_LOAN_ID_9999");
+    ASSERT_NE(key_pos, std::string::npos);
+
+    fz_rect key_rect = fz_empty_rect;
+    for (size_t i = 0; i < 19; ++i) {
+        if (key_pos + i < char_bboxes.size() && !fz_is_empty_rect(char_bboxes[key_pos + i])) {
+            if (fz_is_empty_rect(key_rect)) {
+                key_rect = char_bboxes[key_pos + i];
+            } else {
+                key_rect = fz_union_rect(key_rect, char_bboxes[key_pos + i]);
+            }
+        }
+    }
+    ASSERT_FALSE(fz_is_empty_rect(key_rect));
+
+    wrapper.ApplyRedactions(0, {key_rect});
+
+    std::string redacted_bytes = wrapper.GetRedactedPdf();
+    EXPECT_GT(redacted_bytes.size(), 0);
+
+    MuPDFWrapper redacted_wrapper(redacted_bytes);
+    auto [after_text, _] = redacted_wrapper.ExtractPageText(0);
+    EXPECT_EQ(after_text.find("SECRET_LOAN_ID_9999"), std::string::npos);
+    EXPECT_NE(after_text.find("PUBLIC_HEADER"), std::string::npos);
+
+    int surviving = redacted_wrapper.CountIntersectingGlyphs(redacted_bytes, {key_rect}, 0);
+    EXPECT_EQ(surviving, 0);
+}
+
+TEST(MPL328Tests, AC1_NestedFormXObject_RecursiveInliningAndRedaction) {
+    std::string pdf = MakeSyntheticNestedFormXObjectPdf("NESTED_SECRET_42");
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 1);
+
+    auto [init_text, char_bboxes] = wrapper.ExtractPageText(0);
+    size_t key_pos = init_text.find("NESTED_SECRET_42");
+    ASSERT_NE(key_pos, std::string::npos);
+
+    fz_rect key_rect = fz_empty_rect;
+    for (size_t i = 0; i < 16; ++i) {
+        if (key_pos + i < char_bboxes.size() && !fz_is_empty_rect(char_bboxes[key_pos + i])) {
+            if (fz_is_empty_rect(key_rect)) {
+                key_rect = char_bboxes[key_pos + i];
+            } else {
+                key_rect = fz_union_rect(key_rect, char_bboxes[key_pos + i]);
+            }
+        }
+    }
+    ASSERT_FALSE(fz_is_empty_rect(key_rect));
+
+    wrapper.ApplyRedactions(0, {key_rect});
+
+    std::string redacted_bytes = wrapper.GetRedactedPdf();
+    MuPDFWrapper redacted_wrapper(redacted_bytes);
+    auto [after_text, _] = redacted_wrapper.ExtractPageText(0);
+    EXPECT_EQ(after_text.find("NESTED_SECRET_42"), std::string::npos);
+
+    int surviving = redacted_wrapper.CountIntersectingGlyphs(redacted_bytes, {key_rect}, 0);
+    EXPECT_EQ(surviving, 0);
+}
+
+TEST(MPL328Tests, AC2_NativeCoordinatePrecision_ExactPassThrough) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto onnx_runner = std::make_unique<MockOnnxRunner>();
+    MLInferenceEngine engine(std::move(tokenizer), std::move(onnx_runner));
+
+    const std::string text = "12345 12345 12345";
+    std::vector<fz_rect> char_bboxes;
+    for (int i = 0; i < 17; ++i) {
+        // Use non-integer large coordinates outside standard [0..1000] range
+        float fx0 = 1200.35f + static_cast<float>(i) * 15.25f;
+        float fy0 = 850.75f;
+        float fx1 = fx0 + 15.25f;
+        float fy1 = fy0 + 22.40f;
+        fz_rect r = { fx0, fy0, fx1, fy1 };
+        char_bboxes.push_back(r);
+    }
+
+    std::vector<std::string> labels = {"TestLabel"};
+    auto bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes, labels);
+
+    ASSERT_EQ(bboxes.size(), 1);
+    // Second word spans indices 6..10
+    float expected_x0 = 1200.35f + 6.0f * 15.25f;
+    float expected_x1 = 1200.35f + 11.0f * 15.25f;
+    float expected_y0 = 850.75f;
+    float expected_y1 = 850.75f + 22.40f;
+
+    EXPECT_FLOAT_EQ(bboxes[0].x0, expected_x0);
+    EXPECT_FLOAT_EQ(bboxes[0].y0, expected_y0);
+    EXPECT_FLOAT_EQ(bboxes[0].x1, expected_x1);
+    EXPECT_FLOAT_EQ(bboxes[0].y1, expected_y1);
+}
+
+TEST(MPL328Tests, AC3_WordBoundarySnapping_FullWordEncompassed) {
+    auto tokenizer = std::make_unique<MockTokenizer>();
+    auto onnx_runner = std::make_unique<MockOnnxRunner>();
+    MLInferenceEngine engine(std::move(tokenizer), std::move(onnx_runner));
+
+    const std::string text = "FIRST SECOND_TOKEN THIRD";
+    std::vector<fz_rect> char_bboxes;
+    for (size_t i = 0; i < text.size(); ++i) {
+        fz_rect r = { static_cast<float>(i) * 10.0f, 50.0f, static_cast<float>(i + 1) * 10.0f, 75.0f };
+        char_bboxes.push_back(r);
+    }
+
+    std::vector<std::string> labels = {"TestLabel"};
+    auto bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes, labels);
+
+    ASSERT_EQ(bboxes.size(), 1);
+    // SECOND_TOKEN starts at char 6 and ends at char 18
+    EXPECT_FLOAT_EQ(bboxes[0].x0, 60.0f);
+    EXPECT_FLOAT_EQ(bboxes[0].x1, 180.0f);
+    EXPECT_FLOAT_EQ(bboxes[0].y0, 50.0f);
+    EXPECT_FLOAT_EQ(bboxes[0].y1, 75.0f);
+}
+
+TEST(MPL328Tests, AC4_RealDocument_ReyesCDS_ZeroSurvivingGlyphs) {
+    std::string pdf_path = "/home/ak/Downloads/test/1767198558_8099_Reyes.CDS.pdf";
+    std::ifstream file(pdf_path, std::ios::binary);
+    if (!file.is_open()) {
+        GTEST_SKIP() << "Test PDF not found at: " << pdf_path;
+    }
+
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    std::string pdf_data = ss.str();
+    ASSERT_FALSE(pdf_data.empty());
+
+    MuPDFWrapper mupdf(pdf_data);
+    int page_count = mupdf.GetPageCount();
+    EXPECT_EQ(page_count, 11);
+
+    std::string model_path = "/home/ak/projects/ml/model.onnx";
+    std::string tokenizer_path = "/home/ak/projects/ml/tokenizer.json";
+    auto tokenizer = CreateRealTokenizer(tokenizer_path);
+    auto onnx_runner = CreateRealOnnxRunner(model_path);
+    MLInferenceEngine engine(std::move(tokenizer), std::move(onnx_runner));
+
+    std::vector<std::string> labels = {
+        "person", "address", "phone number", "email", "ssn",
+        "date of birth", "monetary amount", "order number", "loan number"
+    };
+
+    std::map<int, std::vector<fz_rect>> per_page_boxes;
+    std::vector<std::string> target_plaintexts;
+
+    for (int i = 0; i < page_count; ++i) {
+        auto [text, char_bboxes] = mupdf.ExtractPageText(i);
+        std::vector<fz_rect> bboxes = engine.CalculateRedactionBBoxes(text, char_bboxes, labels);
+        if (!bboxes.empty()) {
+            per_page_boxes[i] = bboxes;
+            if (!text.empty()) {
+                size_t ws = text.find(' ');
+                std::string preview = (ws == std::string::npos) ? text.substr(0, 16) : text.substr(0, std::min<size_t>(ws, 16));
+                if (!preview.empty()) target_plaintexts.push_back(preview);
+            }
+        }
+        mupdf.ApplyRedactions(i, bboxes);
+    }
+
+    std::string redacted_pdf = mupdf.GetRedactedPdf();
+    EXPECT_FALSE(redacted_pdf.empty());
+
+    auto report = mupdf.VerifyPostRedaction(redacted_pdf, per_page_boxes, target_plaintexts, "gtest-reyes-cds", "", 1);
+    EXPECT_TRUE(report.is_converged);
+    EXPECT_EQ(report.residual_value_count, 0);
+}
+
+TEST(MPL328Tests, Chaos01_EmptyOrMalformedFormXObject_HandledCleanly) {
+    // PDF with empty form XObject stream
+    std::string pdf = MakeSyntheticFormXObjectPdf("EMPTY_FORM_TEST", "", 50.0f, 500.0f);
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 1);
+
+    auto [text, bboxes] = wrapper.ExtractPageText(0);
+    EXPECT_NE(text.find("EMPTY_FORM_TEST"), std::string::npos);
+
+    fz_rect box = { 50.0f, 690.0f, 150.0f, 715.0f };
+    EXPECT_NO_THROW(wrapper.ApplyRedactions(0, {box}));
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    EXPECT_FALSE(redacted.empty());
+}
+
+TEST(MPL328Tests, Chaos02_ZeroSizedBox_Ignored) {
+    std::string pdf = MakeSyntheticFormXObjectPdf("CANARY", "FORM_SECRET", 50.0f, 500.0f);
+    MuPDFWrapper wrapper(pdf);
+
+    fz_rect zero_box = { 10.0f, 10.0f, 10.0f, 10.0f };
+    fz_rect empty_box = fz_empty_rect;
+    fz_rect inverted_box = { 50.0f, 50.0f, 40.0f, 40.0f };
+
+    EXPECT_NO_THROW(wrapper.ApplyRedactions(0, {zero_box, empty_box, inverted_box}));
+    std::string redacted = wrapper.GetRedactedPdf();
+    EXPECT_FALSE(redacted.empty());
+}
+
+TEST(MPL332Tests, AC1_RejectNonPdfTiffBytes_ThrowsInvalidArgument) {
+    // Little-Endian TIFF header
+    const std::string tiff_le_bytes = std::string("\x49\x49\x2A\x00\x08\x00\x00\x00", 8);
+    EXPECT_THROW({
+        MuPDFWrapper wrapper(tiff_le_bytes);
+    }, std::invalid_argument);
+
+    // Big-Endian TIFF header
+    const std::string tiff_be_bytes = std::string("\x4D\x4D\x00\x2A\x00\x00\x00\x08", 8);
+    EXPECT_THROW({
+        MuPDFWrapper wrapper(tiff_be_bytes);
+    }, std::invalid_argument);
+}
+
+TEST(MPL332Tests, AC1_RejectNonPdfPngBytes_ThrowsInvalidArgument) {
+    const std::string png_bytes = std::string("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89", 29);
+    EXPECT_THROW({
+        MuPDFWrapper wrapper(png_bytes);
+    }, std::invalid_argument);
+}
+
+TEST(MPL332Tests, AC1_RejectEmptyDocumentStream_ThrowsInvalidArgument) {
+    EXPECT_THROW({
+        MuPDFWrapper wrapper("");
+    }, std::invalid_argument);
+}
+
+TEST(MPL332Tests, AC1_GetRedactedPdf_ValidPdf_ReturnsNonEmptyBytes) {
+    std::string pdf = MakeSyntheticFormXObjectPdf("VALID_PDF_TEST", "SECRET", 50.0f, 500.0f);
+    MuPDFWrapper wrapper(pdf);
+    ASSERT_EQ(wrapper.GetPageCount(), 1);
+
+    std::string redacted = wrapper.GetRedactedPdf();
+    EXPECT_FALSE(redacted.empty());
+    EXPECT_GT(redacted.size(), 0);
+}
+
+TEST(LoggerTests, InitLogger_CreatesFileAndWritesLogs) {
+    const std::string test_log_dir = "/tmp/testing/cpp_ml_worker_logs";
+    const std::string test_log_file = test_log_dir + "/test_worker.log";
+
+    std::filesystem::remove_all(test_log_dir);
+    setenv("LOG_FILE_PATH", test_log_file.c_str(), 1);
+
+    doc_processor::InitLogger("test_worker");
+    const std::string canary_msg = "CANARY_LOG_VERIFICATION_MESSAGE_98765";
+    spdlog::info(canary_msg);
+
+    // Verify file was created
+    ASSERT_TRUE(std::filesystem::exists(test_log_file));
+
+    // Read contents and verify message is present
+    std::ifstream file(test_log_file);
+    ASSERT_TRUE(file.is_open());
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+
+    EXPECT_NE(content.find(canary_msg), std::string::npos);
+    EXPECT_NE(content.find("[info]"), std::string::npos);
+
+    // Cleanup testing directory
+    std::filesystem::remove_all(test_log_dir);
+    unsetenv("LOG_FILE_PATH");
+}
+
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+
 
 

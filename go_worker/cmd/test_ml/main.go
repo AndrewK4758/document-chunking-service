@@ -111,8 +111,7 @@ func main() {
 	fmt.Println("ML Redaction completed successfully!")
 
 	// Reconstruct the redacted URI
-	// Note: The C++ ML worker prepends "redacted_" to the URI it receives.
-	redactedUri := "redacted_" + storageUri
+	redactedUri := "internal-store://" + identity.TenantId + "/" + identity.AppId + "/" + identity.JobId + "/redacted_" + fileName
 
 	fmt.Printf("Downloading redacted file from: %s\n", redactedUri)
 	downloadStream, err := gatewayClient.DownloadDocument(context.Background(), &pb.DownloadRequest{

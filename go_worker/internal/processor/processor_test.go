@@ -2,8 +2,8 @@ package processor
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,7 +48,13 @@ func (m *mockStorage) FetchFile(ctx context.Context, relPath string, identity *p
 }
 
 func (m *mockStorage) FetchStream(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("not implemented")
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
+	if len(m.fetchData) > 0 {
+		return io.NopCloser(bytes.NewReader(m.fetchData)), nil
+	}
+	return os.Open(filepath.Join(m.basePath, relPath))
 }
 
 func (m *mockStorage) SaveFile(ctx context.Context, relPath string, identity *pb.InfrastructureIdentity, data []byte) (string, error) {
@@ -665,5 +671,99 @@ func TestUnescapePDFLiteralString(t *testing.T) {
 				t.Errorf("unescapePDFLiteralString(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestDetectMimeType(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []byte
+		expected string
+	}{
+		{
+			name:     "PDF",
+			data:     []byte("%PDF-1.7\r\n..."),
+			expected: "application/pdf",
+		},
+		{
+			name:     "TIFF_LittleEndian",
+			data:     []byte{0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00},
+			expected: "image/tiff",
+		},
+		{
+			name:     "TIFF_BigEndian",
+			data:     []byte{0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08},
+			expected: "image/tiff",
+		},
+		{
+			name:     "PNG",
+			data:     []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00},
+			expected: "image/png",
+		},
+		{
+			name:     "JPEG",
+			data:     []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46},
+			expected: "image/jpeg",
+		},
+		{
+			name:     "ZIP",
+			data:     []byte{0x50, 0x4B, 0x03, 0x04, 0x14, 0x00},
+			expected: "application/zip",
+		},
+		{
+			name:     "Empty",
+			data:     []byte{},
+			expected: "application/octet-stream",
+		},
+		{
+			name:     "UnknownBinary",
+			data:     []byte{0x00, 0x01, 0x02, 0x03, 0x04},
+			expected: "application/octet-stream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectMimeType(tt.data)
+			if got != tt.expected {
+				t.Errorf("DetectMimeType() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestInspectDocument_MimeTypes(t *testing.T) {
+	tiffData := []byte{0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}
+	store := &mockStorage{
+		fetchData: tiffData,
+	}
+
+	chunker := NewChunkingProcessor(nil, store)
+	req := &pb.ExecuteTaskRequest{
+		Identity: &pb.InfrastructureIdentity{
+			TenantId: "t1",
+			AppId:    "a1",
+			JobId:    "job-tiff-inspect",
+		},
+	}
+
+	res, err := chunker.InspectDocument(context.Background(), req, "internal-store://t1/a1/job-tiff-inspect/scan.tif", func(msg, level string) {})
+	if err != nil {
+		t.Fatalf("InspectDocument failed: %v", err)
+	}
+
+	fields := res.GetFields()
+	if fields == nil {
+		t.Fatalf("Expected non-nil fields in result")
+	}
+
+	mimeTypeVal, ok := fields["MimeType"]
+	if !ok || mimeTypeVal.GetStringValue() != "image/tiff" {
+		t.Errorf("Expected MimeType=image/tiff, got %v", mimeTypeVal)
+	}
+
+	isScannedVal, ok := fields["IsScanned"]
+	if !ok || !isScannedVal.GetBoolValue() {
+		t.Errorf("Expected IsScanned=true, got %v", isScannedVal)
 	}
 }

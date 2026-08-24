@@ -24,22 +24,7 @@ using ml::worker::v1::CppMlWorkerService;
 using ml::worker::v1::RedactDocumentRequest;
 using ml::worker::v1::RedactDocumentResponse;
 
-static bool load_env_file(const std::string& path) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        return false;
-    }
-    std::string line;
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        if (size_t pos = line.find('='); pos != std::string::npos) {
-            std::string key = line.substr(0, pos);
-            std::string value = line.substr(pos + 1);
-            setenv(key.c_str(), value.c_str(), 0);
-        }
-    }
-    return true;
-}
+#include "Logger.h"
 
 #include <csignal>
 #include <thread>
@@ -69,9 +54,13 @@ namespace {
                 if (!request->has_identity()) {
                     throw std::invalid_argument("Missing identity in request");
                 }
+                if (request->pass_count() < 0) {
+                    throw std::invalid_argument("[SEAM: IMPOSSIBLE_STATE] pass_count must be >= 1");
+                }
+                int current_pass = request->pass_count() > 0 ? request->pass_count() : 1;
 
                 std::string job_id = request->identity().job_id();
-                spdlog::info("[JOB: {}] Starting ML Redaction for URI: {}", job_id, request->document_uri());
+                spdlog::info("[JOB: {}] Starting ML Redaction for URI: {} (Pass: {})", job_id, request->document_uri(), current_pass);
 
                 spdlog::info("[JOB: {}] 1. Downloading document from Storage Gateway...", job_id);
                 const std::string pdf_data = storage_client_->Download(request->document_uri(), request->identity());
@@ -95,7 +84,30 @@ namespace {
                     auto [text, char_bboxes] = mupdf.ExtractPageText(i);
                     
                     spdlog::info("[JOB: {}]    -> [Page {}/{}] Running GLiNER ML Inference...", job_id, i+1, page_count);
-                    std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(text, char_bboxes, labels);
+                    float threshold_override = request->confidence_threshold_override() > 0.0f ? request->confidence_threshold_override() : -1.0f;
+                    std::vector<fz_rect> bboxes = engine_->CalculateRedactionBBoxes(text, char_bboxes, labels, threshold_override);
+                    
+                    for (const auto& zone : request->spatial_wipe_zones()) {
+                        if (zone.page_number() == i + 1 || zone.page_number() == i) {
+                            // [SEAM: IMPOSSIBLE_STATE] Validate wipe zone coordinates per MPL-327 Chaos-03
+                            if (zone.x0() < 0 || zone.y0() < 0 || zone.x1() < 0 || zone.y1() < 0) {
+                                spdlog::error("[JOB: {}] SpatialWipeZone negative coordinate on page {}: [{},{},{},{}]", job_id, zone.page_number(), zone.x0(), zone.y0(), zone.x1(), zone.y1());
+                                throw std::invalid_argument("SpatialWipeZone contains negative coordinate: [" + std::to_string(zone.x0()) + "," + std::to_string(zone.y0()) + "," + std::to_string(zone.x1()) + "," + std::to_string(zone.y1()) + "]");
+                            }
+                            if (zone.x1() <= zone.x0() || zone.y1() <= zone.y0()) {
+                                spdlog::error("[JOB: {}] SpatialWipeZone invalid rect on page {}: x1<=x0 or y1<=y0", job_id, zone.page_number());
+                                throw std::invalid_argument("SpatialWipeZone invalid rect: x1 must be > x0 and y1 > y0");
+                            }
+                            fz_rect r = { zone.x0(), zone.y0(), zone.x1(), zone.y1() };
+                            bboxes.push_back(r);
+                        }
+                    }
+                    for (const auto& box : request->custom_boxes()) {
+                        if (box.page_number() == i + 1 || box.page_number() == i) {
+                            fz_rect r = { box.x0(), box.y0(), box.x1(), box.y1() };
+                            bboxes.push_back(r);
+                        }
+                    }
                     
                     spdlog::info("[JOB: {}]    -> [Page {}/{}] Identified {} PII elements. Applying redaction blocks...", job_id, i+1, page_count, bboxes.size());
                     if (!bboxes.empty()) {
@@ -111,32 +123,51 @@ namespace {
 
                 spdlog::info("[JOB: {}] 4. Serializing redacted PDF document back to memory...", job_id);
                 std::string redacted_pdf_data = mupdf.GetRedactedPdf();
-
-                {
-                    std::string traceparent;
-                    auto meta = context->client_metadata();
-                    auto it = meta.find("traceparent");
-                    if (it != meta.end()) traceparent = std::string(it->second.data(), it->second.size());
-                    else {
-                        auto it2 = meta.find("grpc-trace-bin");
-                        if (it2 != meta.end()) traceparent = std::string(it2->second.data(), it2->second.size());
-                    }
-                    try {
-                        mupdf.VerifyPostRedaction(redacted_pdf_data, per_page_boxes, target_plaintexts, job_id, traceparent);
-                        spdlog::info("[JOB: {}] 4b. Post-redaction verification PASSED (0 surviving glyphs/bytes)", job_id);
-                    } catch (const std::exception& vex) {
-                        spdlog::critical("[SEAM: LINEAGE_GAP] Verification failed for job_id={} : {}", job_id, vex.what());
-                        throw;
-                    }
+                if (redacted_pdf_data.empty()) {
+                    spdlog::error("[JOB: {}] Serialized redacted PDF data is empty (0 bytes), rejecting upload to Storage Gateway", job_id);
+                    throw std::runtime_error("[SEAM: LINEAGE_GAP] RedactDocument: serialized PDF data is empty, rejecting 0-byte upload");
                 }
-                
-                spdlog::info("[JOB: {}] 5. Uploading final redacted document to Storage Gateway...", job_id);
-                std::string storage_uri = storage_client_->Upload("redacted_" + request->document_uri(), request->identity(), redacted_pdf_data);
 
-                spdlog::info("[JOB: {}] ML Redaction Process Completed Successfully! Saved as: {}", job_id, storage_uri);
+                std::string traceparent;
+                auto meta = context->client_metadata();
+                auto it = meta.find("traceparent");
+                if (it != meta.end()) traceparent = std::string(it->second.data(), it->second.size());
+                else {
+                    auto it2 = meta.find("grpc-trace-bin");
+                    if (it2 != meta.end()) traceparent = std::string(it2->second.data(), it2->second.size());
+                }
+
+                auto report = mupdf.VerifyPostRedaction(redacted_pdf_data, per_page_boxes, target_plaintexts, job_id, traceparent, current_pass);
+
+                spdlog::info("[JOB: {}] 5. Uploading redacted document to Storage Gateway...", job_id);
+                // MPL-327 generic: use basename for storage key to avoid "redacted_internal-store://..." path traversal
+                const std::string& _uri = request->document_uri();
+                size_t _pos = _uri.find_last_of("/\\");
+                std::string _base = (_pos==std::string::npos? _uri : _uri.substr(_pos+1));
+                if(_base.empty()) _base = "redacted.pdf";
+                std::string storage_uri = storage_client_->Upload("redacted_" + _base, request->identity(), redacted_pdf_data);
 
                 response->set_success(true);
                 response->set_error_message("");
+                {
+                    int total_boxes = 0;
+                    for (auto &val: per_page_boxes | std::views::values) total_boxes += val.size();
+                    response->set_redacted_boxes_count(total_boxes);
+
+                    auto* rep = response->mutable_residual_report();
+                    rep->set_is_converged(report.is_converged);
+                    rep->set_residual_value_count(report.residual_value_count);
+                    rep->set_pass_count(report.pass_count);
+                    for (const auto& sample : report.residual_samples) {
+                        rep->add_residual_samples(sample);
+                    }
+                }
+
+                if (report.is_converged) {
+                    spdlog::info("[JOB: {}] ML Redaction Process Completed Successfully! Saved as: {}", job_id, storage_uri);
+                } else {
+                    spdlog::warn("[JOB: {}] ML Redaction Pass {} completed with {} residuals. Saved as: {}", job_id, current_pass, report.residual_value_count, storage_uri);
+                }
                 return Status::OK;
 
             } catch (const std::invalid_argument& ex) {
@@ -180,11 +211,8 @@ int main(int argc, char** argv) {
     sigaddset(&sigset, SIGTERM);
     pthread_sigmask(SIG_BLOCK, &sigset, nullptr);
 
-    if (!load_env_file(".env") && !load_env_file("../.env")) {
-        spdlog::warn("Failed to open environment file (.env or ../.env)");
-    }
-    
-    spdlog::set_level(spdlog::level::info);
+    doc_processor::InitEnv();
+    doc_processor::InitLogger("cpp_ml_worker");
     spdlog::info("Starting C++ ML Worker...");
 
     // Provide default paths, these could be overridden by env vars

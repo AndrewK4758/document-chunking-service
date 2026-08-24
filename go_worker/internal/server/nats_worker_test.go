@@ -1,10 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"testing"
 	"time"
+
+	"document_processing_service/internal/processor"
 
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/nats-io/nats.go"
@@ -172,5 +176,50 @@ func TestHandleMessageWithRecovery_Panic_NakWithDelay(t *testing.T) {
 
 	if !msg.nakedWithDelay {
 		t.Errorf("Expected NakWithDelay to be called on panic")
+	}
+}
+
+type mockStorageForInspect struct {
+	data []byte
+}
+
+func (m *mockStorageForInspect) FetchFile(ctx context.Context, path string, identity *pb.InfrastructureIdentity) ([]byte, error) {
+	return m.data, nil
+}
+func (m *mockStorageForInspect) FetchStream(ctx context.Context, path string, identity *pb.InfrastructureIdentity) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(m.data)), nil
+}
+func (m *mockStorageForInspect) SaveFile(ctx context.Context, path string, identity *pb.InfrastructureIdentity, data []byte) (string, error) {
+	return path, nil
+}
+
+func TestInspectDocument_TiffImageInspection(t *testing.T) {
+	tiffBytes := []byte{0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00}
+	store := &mockStorageForInspect{data: tiffBytes}
+	chunker := processor.NewChunkingProcessor(nil, store)
+
+	req := &pb.ExecuteTaskRequest{
+		Identity: &pb.InfrastructureIdentity{
+			TenantId: "tenant-1",
+			AppId:    "app-1",
+			JobId:    "job-tiff-1",
+		},
+		TaskSubject: "worker.doc.inspect",
+	}
+
+	res, err := chunker.InspectDocument(context.Background(), req, "internal-store://tenant-1/app-1/job-tiff-1/document.tif", func(msg, level string) {})
+	if err != nil {
+		t.Fatalf("InspectDocument returned error: %v", err)
+	}
+
+	if res == nil || res.Fields == nil {
+		t.Fatalf("Expected non-nil result fields")
+	}
+
+	if res.Fields["MimeType"].GetStringValue() != "image/tiff" {
+		t.Errorf("Expected MimeType=image/tiff, got %s", res.Fields["MimeType"].GetStringValue())
+	}
+	if !res.Fields["IsScanned"].GetBoolValue() {
+		t.Errorf("Expected IsScanned=true, got %v", res.Fields["IsScanned"].GetBoolValue())
 	}
 }

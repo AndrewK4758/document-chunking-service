@@ -21,6 +21,19 @@ struct PageTextData {
     std::vector<fz_rect> char_bboxes;
 };
 
+struct SurvivingGlyphsResult {
+    int count = 0;
+    std::vector<fz_rect> glyph_quads;
+    std::vector<std::string> sample_snippets;
+};
+
+struct PostRedactionReport {
+    bool is_converged = true;
+    int residual_value_count = 0;
+    std::vector<std::string> residual_samples;
+    int pass_count = 1;
+};
+
 class MuPDFWrapper {
 public:
     explicit MuPDFWrapper(const std::string& pdf_data,
@@ -53,8 +66,17 @@ public:
     [[nodiscard]] std::string GetRedactedPdf() const;
 
     // Post-redaction verification — dual-oracle (Layer 1 structural + Layer 2 byte scan)
+    [[nodiscard]] SurvivingGlyphsResult CollectIntersectingGlyphs(const std::string& redacted_pdf_bytes, const std::vector<fz_rect>& boxes, int page_index) const;
     [[nodiscard]] int CountIntersectingGlyphs(const std::string& redacted_pdf_bytes, const std::vector<fz_rect>& boxes, int page_index) const;
     [[nodiscard]] int CountPlaintextOccurrences(const std::string& redacted_pdf_bytes, const std::vector<std::string>& plaintexts) const;
+
+    PostRedactionReport VerifyPostRedaction(std::string& redacted_pdf_bytes,
+                                           const std::map<int, std::vector<fz_rect>>& per_page_boxes,
+                                           const std::vector<std::string>& target_plaintexts,
+                                           const std::string& job_id,
+                                           const std::string& traceparent = "",
+                                           int pass_count = 1) const;
+
     void VerifyPostRedaction(const std::string& redacted_pdf_bytes,
                              const std::map<int, std::vector<fz_rect>>& per_page_boxes,
                              const std::vector<std::string>& target_plaintexts,
@@ -64,6 +86,9 @@ public:
 private:
     fz_context* ctx() const noexcept { return pooled_ctx_.get(); }
     void ensure_valid() const;
+
+    static void MergePdfDicts(fz_context* ctx, pdf_obj* dest_dict, pdf_obj* src_dict);
+    static void InlineFormXObjects(fz_context* ctx, pdf_document* doc, pdf_page* page);
 
     std::shared_ptr<FzContextPool> pool_;
     FzContextPool::PooledContext pooled_ctx_;

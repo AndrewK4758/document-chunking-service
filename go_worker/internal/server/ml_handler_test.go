@@ -91,6 +91,85 @@ func TestHandleCppMLRequest_PanicOnFailure(t *testing.T) {
 	})
 }
 
+func TestHandleCppMLRequest_WithResidualReport_Success(t *testing.T) {
+	mockMlClient := &MockCppMlWorkerServiceClient{
+		RedactDocumentFunc: func(ctx context.Context, in *pb.RedactDocumentRequest, opts ...grpc.CallOption) (*pb.RedactDocumentResponse, error) {
+			return &pb.RedactDocumentResponse{
+				Success: true,
+				ResidualReport: &pb.ResidualSweepReport{
+					IsConverged:        true,
+					ResidualValueCount: 2,
+					ResidualSamples:    []string{"$1,200.00", "2026-08-24"},
+					PassCount:          1,
+				},
+			}, nil
+		},
+	}
+
+	server := &NatsServer{
+		cppMlClient: mockMlClient,
+		store:       &mockStorageForMl{},
+	}
+
+	req := &pb.ExecuteTaskRequest{}
+	payload := &pb.ExecuteTaskPayload{
+		Storage: &pb.StorageContract{
+			DocumentUri: "s3://original",
+		},
+	}
+	identity := &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"}
+
+	res, err := server.handleCppMLRequest(context.Background(), req, payload, identity)
+	assert.NoError(t, err)
+	assert.NotNil(t, res)
+
+	fields := res.GetFields()
+	assert.Contains(t, fields, "residual_report")
+	reportStruct := fields["residual_report"].GetStructValue()
+	assert.NotNil(t, reportStruct)
+	assert.True(t, reportStruct.Fields["is_converged"].GetBoolValue())
+	assert.Equal(t, float64(2), reportStruct.Fields["residual_value_count"].GetNumberValue())
+	assert.Equal(t, float64(1), reportStruct.Fields["pass_count"].GetNumberValue())
+
+	samplesList := reportStruct.Fields["residual_samples"].GetListValue()
+	assert.NotNil(t, samplesList)
+	assert.Equal(t, 2, len(samplesList.Values))
+	assert.Equal(t, "$1,200.00", samplesList.Values[0].GetStringValue())
+	assert.Equal(t, "2026-08-24", samplesList.Values[1].GetStringValue())
+}
+
+func TestHandleCppMLRequest_UnconvergedExhausted_Panics(t *testing.T) {
+	mockMlClient := &MockCppMlWorkerServiceClient{
+		RedactDocumentFunc: func(ctx context.Context, in *pb.RedactDocumentRequest, opts ...grpc.CallOption) (*pb.RedactDocumentResponse, error) {
+			return &pb.RedactDocumentResponse{
+				Success: true,
+				ResidualReport: &pb.ResidualSweepReport{
+					IsConverged:        false,
+					ResidualValueCount: 5,
+					ResidualSamples:    []string{"$5,000"},
+					PassCount:          3,
+				},
+			}, nil
+		},
+	}
+
+	server := &NatsServer{
+		cppMlClient: mockMlClient,
+		store:       &mockStorageForMl{},
+	}
+
+	payload := &pb.ExecuteTaskPayload{
+		Storage: &pb.StorageContract{
+			DocumentUri: "s3://original",
+		},
+	}
+	identity := &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"}
+
+	assert.Panics(t, func() {
+		server.handleCppMLRequest(context.Background(), &pb.ExecuteTaskRequest{}, payload, identity)
+	})
+}
+
 func TestHandleDotnetMLRequest_Success(t *testing.T) {
 	mockDotnetClient := &MockDotnetMlWorkerServiceClient{
 		RedactPiiFunc: func(ctx context.Context, in *pb.PiiRedactionRequest, opts ...grpc.CallOption) (*pb.PiiRedactionResponse, error) {
@@ -122,3 +201,4 @@ func TestHandleDotnetMLRequest_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, res)
 }
+

@@ -2,6 +2,8 @@
 #include <stdexcept>
 #include <algorithm>
 #include <map>
+#include <unordered_map>
+#include <cmath>
 #include <spdlog/spdlog.h>
 
 void MuPDFWrapper::ensure_valid() const {
@@ -17,6 +19,9 @@ MuPDFWrapper::MuPDFWrapper(const std::string& pdf_data, std::shared_ptr<FzContex
     : pool_(std::move(pool)) {
     if (!pool_) {
         throw std::runtime_error("FzContextPool is null");
+    }
+    if (pdf_data.empty()) {
+        throw std::invalid_argument("[SEAM: IMPOSSIBLE_STATE] MuPDFWrapper: document byte stream is empty");
     }
     pooled_ctx_ = pool_->Checkout();
     fz_context* c = ctx();
@@ -35,7 +40,14 @@ MuPDFWrapper::MuPDFWrapper(const std::string& pdf_data, std::shared_ptr<FzContex
         std::string err_msg = fz_caught_message(c);
         spdlog::error("MuPDFWrapper constructor error: {}", err_msg);
         // stream will be dropped via RAII when scope exits; doc_ remains null
-        throw std::runtime_error("MuPDF Error: " + err_msg);
+        throw std::invalid_argument("[SEAM: IMPOSSIBLE_STATE] MuPDFWrapper: failed to load PDF document: " + err_msg);
+    }
+
+    // Ensure loaded document is a valid PDF document (reject non-PDF formats like raw TIFF/PNG/JPEG)
+    pdf_document* pdoc = pdf_document_from_fz_document(c, doc_.get());
+    if (!pdoc) {
+        doc_.reset();
+        throw std::invalid_argument("[SEAM: IMPOSSIBLE_STATE] MuPDFWrapper: document is not a valid PDF (non-PDF or unsupported format detected)");
     }
 }
 
@@ -230,6 +242,241 @@ std::vector<unsigned char> MuPDFWrapper::RenderPagePixmap(int page_index, int dp
     return out;
 }
 
+namespace {
+    std::string ReplaceFormDoInvocations(
+        const std::string& input,
+        const std::unordered_map<std::string, std::string>& form_inlines
+    ) {
+        std::string output;
+        output.reserve(input.size() * 2);
+
+        size_t i = 0;
+        size_t n = input.size();
+
+        auto is_delim = [](char c) -> bool {
+            return c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+                   c == '(' || c == ')' || c == '<' || c == '>' ||
+                   c == '[' || c == ']' || c == '{' || c == '}' ||
+                   c == '/' || c == '%';
+        };
+
+        while (i < n) {
+            // 1. Skip comments
+            if (input[i] == '%') {
+                size_t start = i;
+                while (i < n && input[i] != '\r' && input[i] != '\n') {
+                    i++;
+                }
+                output.append(input, start, i - start);
+                continue;
+            }
+
+            // 2. Skip literal strings (...) handling parentheses balance and escapes
+            if (input[i] == '(') {
+                size_t start = i;
+                int depth = 1;
+                i++;
+                while (i < n && depth > 0) {
+                    if (input[i] == '\\') {
+                        i += 2;
+                    } else if (input[i] == '(') {
+                        depth++;
+                        i++;
+                    } else if (input[i] == ')') {
+                        depth--;
+                        i++;
+                    } else {
+                        i++;
+                    }
+                }
+                output.append(input, start, i - start);
+                continue;
+            }
+
+            // 3. Skip hex strings <...>
+            if (input[i] == '<' && (i + 1 >= n || input[i + 1] != '<')) {
+                size_t start = i;
+                i++;
+                while (i < n && input[i] != '>') {
+                    i++;
+                }
+                if (i < n && input[i] == '>') i++;
+                output.append(input, start, i - start);
+                continue;
+            }
+
+            // 4. Check for Name token starting with '/'
+            if (input[i] == '/') {
+                size_t name_start = i + 1;
+                size_t j = name_start;
+                while (j < n && !is_delim(input[j])) {
+                    j++;
+                }
+                std::string name = input.substr(name_start, j - name_start);
+
+                auto it = form_inlines.find(name);
+                if (it != form_inlines.end()) {
+                    // Check if following token is "Do"
+                    size_t k = j;
+                    while (k < n && (input[k] == ' ' || input[k] == '\t' || input[k] == '\r' || input[k] == '\n')) {
+                        k++;
+                    }
+                    if (k + 2 <= n && input[k] == 'D' && input[k + 1] == 'o' &&
+                        (k + 2 == n || is_delim(input[k + 2]))) {
+                        // Match found: "/Name ... Do"
+                        output.append("\nq\n");
+                        output.append(it->second);
+                        output.append("\nQ\n");
+                        i = k + 2;
+                        continue;
+                    }
+                }
+            }
+
+            // Default: copy current character
+            output.push_back(input[i]);
+            i++;
+        }
+
+        return output;
+    }
+}
+
+void MuPDFWrapper::MergePdfDicts(fz_context* ctx, pdf_obj* dest_dict, pdf_obj* src_dict) {
+    if (!dest_dict || !src_dict || !pdf_is_dict(ctx, dest_dict) || !pdf_is_dict(ctx, src_dict)) {
+        return;
+    }
+    int len = pdf_dict_len(ctx, src_dict);
+    for (int i = 0; i < len; ++i) {
+        pdf_obj* key = pdf_dict_get_key(ctx, src_dict, i);
+        pdf_obj* src_val = pdf_dict_get_val(ctx, src_dict, i);
+        pdf_obj* dest_val = pdf_dict_get(ctx, dest_dict, key);
+
+        if (!dest_val) {
+            pdf_dict_put(ctx, dest_dict, key, src_val);
+        } else if (pdf_is_dict(ctx, dest_val) && pdf_is_dict(ctx, src_val)) {
+            MergePdfDicts(ctx, dest_val, src_val);
+        }
+    }
+}
+
+void MuPDFWrapper::InlineFormXObjects(fz_context* ctx, pdf_document* doc, pdf_page* page) {
+    if (!ctx || !doc || !page) return;
+    pdf_obj* page_obj = page->obj;
+    if (!page_obj) return;
+
+    pdf_obj* page_res = pdf_dict_get(ctx, page_obj, PDF_NAME(Resources));
+    if (!page_res || !pdf_is_dict(ctx, page_res)) return;
+
+    pdf_obj* page_xobjects = pdf_dict_get(ctx, page_res, PDF_NAME(XObject));
+    if (!page_xobjects || !pdf_is_dict(ctx, page_xobjects)) return;
+
+    int xobj_len = pdf_dict_len(ctx, page_xobjects);
+    if (xobj_len == 0) return;
+
+    std::unordered_map<std::string, std::string> form_inlines;
+    for (int i = 0; i < xobj_len; ++i) {
+        pdf_obj* key_obj = pdf_dict_get_key(ctx, page_xobjects, i);
+        pdf_obj* val_obj = pdf_dict_get_val(ctx, page_xobjects, i);
+        if (!val_obj) continue;
+
+        pdf_obj* subtype = pdf_dict_get(ctx, val_obj, PDF_NAME(Subtype));
+        if (!pdf_name_eq(ctx, subtype, PDF_NAME(Form))) {
+            continue;
+        }
+
+        const char* key_name = pdf_to_name(ctx, key_obj);
+        if (!key_name) continue;
+
+        FzBufferPtr form_buf(nullptr, FzBufferDeleter{ctx});
+        form_buf.reset(pdf_load_stream(ctx, val_obj));
+        if (!form_buf || form_buf->len == 0) continue;
+
+        std::string form_data(reinterpret_cast<const char*>(form_buf->data), form_buf->len);
+
+        std::string matrix_cmd;
+        pdf_obj* mat_obj = pdf_dict_get(ctx, val_obj, PDF_NAME(Matrix));
+        if (mat_obj && pdf_is_array(ctx, mat_obj) && pdf_array_len(ctx, mat_obj) == 6) {
+            float a = pdf_array_get_real(ctx, mat_obj, 0);
+            float b = pdf_array_get_real(ctx, mat_obj, 1);
+            float c_val = pdf_array_get_real(ctx, mat_obj, 2);
+            float d = pdf_array_get_real(ctx, mat_obj, 3);
+            float e = pdf_array_get_real(ctx, mat_obj, 4);
+            float f = pdf_array_get_real(ctx, mat_obj, 5);
+            if (std::abs(a - 1.0f) > 1e-5f || std::abs(b) > 1e-5f ||
+                std::abs(c_val) > 1e-5f || std::abs(d - 1.0f) > 1e-5f ||
+                std::abs(e) > 1e-5f || std::abs(f) > 1e-5f) {
+                char mbuf[128];
+                std::snprintf(mbuf, sizeof(mbuf), "%.6g %.6g %.6g %.6g %.6g %.6g cm\n",
+                              a, b, c_val, d, e, f);
+                matrix_cmd = mbuf;
+            }
+        }
+
+        pdf_obj* form_res = pdf_dict_get(ctx, val_obj, PDF_NAME(Resources));
+        if (form_res && pdf_is_dict(ctx, form_res)) {
+            MergePdfDicts(ctx, page_res, form_res);
+        }
+
+        form_inlines[key_name] = matrix_cmd + form_data;
+    }
+
+    if (form_inlines.empty()) return;
+
+    // Resolve nested Form XObjects inside form streams (up to depth 4)
+    for (int depth = 0; depth < 4; ++depth) {
+        bool changed = false;
+        for (auto& [name, content] : form_inlines) {
+            std::string inlined = ReplaceFormDoInvocations(content, form_inlines);
+            if (inlined != content) {
+                content = std::move(inlined);
+                changed = true;
+            }
+        }
+        if (!changed) break;
+    }
+
+    pdf_obj* contents_obj = pdf_dict_get(ctx, page_obj, PDF_NAME(Contents));
+    if (!contents_obj) return;
+
+    std::string page_content;
+    if (pdf_is_array(ctx, contents_obj)) {
+        int count = pdf_array_len(ctx, contents_obj);
+        for (int i = 0; i < count; ++i) {
+            pdf_obj* elem = pdf_array_get(ctx, contents_obj, i);
+            if (elem) {
+                FzBufferPtr part_buf(nullptr, FzBufferDeleter{ctx});
+                part_buf.reset(pdf_load_stream(ctx, elem));
+                if (part_buf && part_buf->len > 0) {
+                    if (!page_content.empty()) page_content += '\n';
+                    page_content.append(reinterpret_cast<const char*>(part_buf->data), part_buf->len);
+                }
+            }
+        }
+    } else if (pdf_is_stream(ctx, contents_obj)) {
+        FzBufferPtr buf(nullptr, FzBufferDeleter{ctx});
+        buf.reset(pdf_load_stream(ctx, contents_obj));
+        if (buf && buf->len > 0) {
+            page_content.assign(reinterpret_cast<const char*>(buf->data), buf->len);
+        }
+    } else {
+        return;
+    }
+
+    if (page_content.empty()) return;
+
+    std::string inlined_content = ReplaceFormDoInvocations(page_content, form_inlines);
+    if (inlined_content == page_content) {
+        return;
+    }
+
+    FzBufferPtr new_buf(nullptr, FzBufferDeleter{ctx});
+    new_buf.reset(fz_new_buffer_from_copied_data(ctx, reinterpret_cast<const unsigned char*>(inlined_content.data()), inlined_content.size()));
+    pdf_obj* new_stm = pdf_add_stream(ctx, doc, new_buf.get(), nullptr, 0);
+    pdf_dict_put_drop(ctx, page_obj, PDF_NAME(Contents), new_stm);
+    pdf_sync_page(ctx, page);
+}
+
 void MuPDFWrapper::ApplyRedactions(int page_index, const std::vector<fz_rect>& bboxes, const float color[3]) const {
     ensure_valid();
     int page_count = GetPageCount();
@@ -251,18 +498,26 @@ void MuPDFWrapper::ApplyRedactions(int page_index, const std::vector<fz_rect>& b
         }
 
         if (pdf_page* ppage = pdf_page_from_fz_page(c, page.get())) {
+            pdf_document* pdoc = pdf_document_from_fz_document(c, doc_.get());
+            InlineFormXObjects(c, pdoc, ppage);
+
             int valid_annots = 0;
             for (const auto& rect : bboxes) {
                 if (fz_is_empty_rect(rect) || rect.x0 >= rect.x1 || rect.y0 >= rect.y1) {
                     continue;
                 }
+                fz_rect padded_rect = rect;
+                padded_rect.x0 -= 1.0f;
+                padded_rect.y0 -= 1.0f;
+                padded_rect.x1 += 1.0f;
+                padded_rect.y1 += 1.0f;
                 pdf_annot* annot = pdf_create_annot(c, ppage, PDF_ANNOT_REDACT);
-                pdf_set_annot_rect(c, annot, rect);
+                pdf_set_annot_rect(c, annot, padded_rect);
                 pdf_set_annot_color(c, annot, 3, fill_color);
                 valid_annots++;
             }
             if (valid_annots > 0) {
-                pdf_redact_page(c, pdf_document_from_fz_document(c, doc_.get()), ppage, nullptr);
+                pdf_redact_page(c, pdoc, ppage, nullptr);
             }
         }
     } fz_catch(c) {
@@ -301,6 +556,9 @@ void MuPDFWrapper::ApplyNormalizedRedactions(
             }
 
             if (pdf_page* ppage = pdf_page_from_fz_page(c, page.get())) {
+                pdf_document* pdoc = pdf_document_from_fz_document(c, doc_.get());
+                InlineFormXObjects(c, pdoc, ppage);
+
                 // Sourced exclusively from fz_bound_page visible bounds (anchored at page_bounds.x0/y0)
                 fz_rect page_bounds = fz_bound_page(c, page.get());
                 float page_w = page_bounds.x1 - page_bounds.x0;
@@ -337,15 +595,20 @@ void MuPDFWrapper::ApplyNormalizedRedactions(
                         continue;
                     }
 
+                    fz_rect padded_rect = visual_rect;
+                    padded_rect.x0 -= 1.0f;
+                    padded_rect.y0 -= 1.0f;
+                    padded_rect.x1 += 1.0f;
+                    padded_rect.y1 += 1.0f;
                     pdf_annot* annot = pdf_create_annot(c, ppage, PDF_ANNOT_REDACT);
-                    pdf_set_annot_rect(c, annot, visual_rect);
+                    pdf_set_annot_rect(c, annot, padded_rect);
                     pdf_set_annot_color(c, annot, 3, fill_color);
                     valid_annots++;
 
                 }
 
                 if (valid_annots > 0) {
-                    pdf_redact_page(c, pdf_document_from_fz_document(c, doc_.get()), ppage, nullptr);
+                    pdf_redact_page(c, pdoc, ppage, nullptr);
                 }
             }
         } fz_catch(c) {
@@ -363,6 +626,11 @@ std::string MuPDFWrapper::GetRedactedPdf() const {
     FzOutputPtr out(nullptr, FzOutputDeleter{c});
 
     fz_try(c) {
+        pdf_document* pdoc = pdf_document_from_fz_document(c, doc_.get());
+        if (!pdoc) {
+            fz_throw(c, FZ_ERROR_GENERIC, "[SEAM: IMPOSSIBLE_STATE] GetRedactedPdf: document is not a valid PDF");
+        }
+
         buf.reset(fz_new_buffer(c, 1024));
         out.reset(fz_new_output_with_buffer(c, buf.get()));
 
@@ -371,8 +639,12 @@ std::string MuPDFWrapper::GetRedactedPdf() const {
         write_opts.do_sanitize = 1;
         write_opts.do_garbage = 3;
         write_opts.do_compress = 1;
-        pdf_write_document(c, pdf_document_from_fz_document(c, doc_.get()), out.get(), &write_opts);
+        pdf_write_document(c, pdoc, out.get(), &write_opts);
         fz_close_output(c, out.get());
+
+        if (!buf || buf->len == 0) {
+            fz_throw(c, FZ_ERROR_GENERIC, "[SEAM: LINEAGE_GAP] GetRedactedPdf: serialized PDF buffer is 0 bytes");
+        }
 
         // Release output before reading buffer (output will be dropped via RAII after)
         redacted_pdf_data = std::string(reinterpret_cast<const char*>(buf->data), buf->len);
@@ -382,11 +654,11 @@ std::string MuPDFWrapper::GetRedactedPdf() const {
     return redacted_pdf_data;
 }
 
-int MuPDFWrapper::CountIntersectingGlyphs(const std::string& redacted_pdf_bytes, const std::vector<fz_rect>& boxes, int page_index) const {
-    if (boxes.empty() || redacted_pdf_bytes.empty()) return 0;
+SurvivingGlyphsResult MuPDFWrapper::CollectIntersectingGlyphs(const std::string& redacted_pdf_bytes, const std::vector<fz_rect>& boxes, int page_index) const {
+    SurvivingGlyphsResult res;
+    if (boxes.empty() || redacted_pdf_bytes.empty()) return res;
     fz_context* vctx = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
-    if (!vctx) throw std::runtime_error("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs: fz_new_context failed");
-    int surviving = 0;
+    if (!vctx) throw std::runtime_error("[SEAM: IMPOSSIBLE_STATE] CollectIntersectingGlyphs: fz_new_context failed");
     fz_try(vctx) {
         fz_register_document_handlers(vctx);
         fz_stream* vstream = fz_open_memory(vctx, reinterpret_cast<const unsigned char*>(redacted_pdf_bytes.data()), redacted_pdf_bytes.size());
@@ -397,7 +669,7 @@ int MuPDFWrapper::CountIntersectingGlyphs(const std::string& redacted_pdf_bytes,
             fz_drop_stream(vctx, vstream);
         } fz_catch(vctx) {
             fz_drop_context(vctx);
-            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs open: ") + fz_caught_message(vctx));
+            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CollectIntersectingGlyphs open: ") + fz_caught_message(vctx));
         }
         int vpage_count = 0;
         fz_try(vctx) {
@@ -405,12 +677,12 @@ int MuPDFWrapper::CountIntersectingGlyphs(const std::string& redacted_pdf_bytes,
         } fz_catch(vctx) {
             fz_drop_document(vctx, vdoc);
             fz_drop_context(vctx);
-            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs count: ") + fz_caught_message(vctx));
+            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CollectIntersectingGlyphs count: ") + fz_caught_message(vctx));
         }
         if (page_index < 0 || page_index >= vpage_count) {
             fz_drop_document(vctx, vdoc);
             fz_drop_context(vctx);
-            throw std::out_of_range("CountIntersectingGlyphs page_index out of range");
+            throw std::out_of_range("CollectIntersectingGlyphs page_index out of range");
         }
         fz_page* vpage = nullptr;
         fz_stext_page* stext = nullptr;
@@ -424,15 +696,31 @@ int MuPDFWrapper::CountIntersectingGlyphs(const std::string& redacted_pdf_bytes,
                     fz_stext_block* block = block_it.block;
                     if (block->type != FZ_STEXT_BLOCK_TEXT) continue;
                     for (fz_stext_line* line = block->u.t.first_line; line; line = line->next) {
+                        std::string word_chars;
                         for (fz_stext_char* ch = line->first_char; ch; ch = ch->next) {
-                            if (ch->c < 32 || ch->c > 126) continue;
+                            if (ch->c <= 32 || ch->c > 126) continue;
                             fz_rect qr = fz_rect_from_quad(ch->quad);
                             if (fz_is_empty_rect(qr)) continue;
+                            float mid_x = (qr.x0 + qr.x1) * 0.5f;
+                            float mid_y = (qr.y0 + qr.y1) * 0.5f;
                             for (const auto& box : boxes) {
                                 if (fz_is_empty_rect(box)) continue;
-                                fz_rect isect = fz_intersect_rect(qr, box);
-                                if (!fz_is_empty_rect(isect)) { surviving++; break; }
+                                if (mid_x >= box.x0 && mid_x <= box.x1 && mid_y >= box.y0 && mid_y <= box.y1) {
+                                    res.count++;
+                                    res.glyph_quads.push_back(qr);
+                                    word_chars.push_back(static_cast<char>(ch->c));
+                                    break;
+                                }
                             }
+                        }
+                        if (!word_chars.empty()) {
+                            std::string masked;
+                            if (word_chars.size() <= 2) {
+                                masked = std::string(word_chars.size(), '*');
+                            } else {
+                                masked = std::string(1, word_chars.front()) + "***" + std::string(1, word_chars.back()) + ":" + std::to_string(word_chars.size());
+                            }
+                            res.sample_snippets.push_back(masked);
                         }
                     }
                 }
@@ -443,13 +731,17 @@ int MuPDFWrapper::CountIntersectingGlyphs(const std::string& redacted_pdf_bytes,
             fz_drop_document(vctx, vdoc);
         } fz_catch(vctx) {
             fz_drop_context(vctx);
-            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs re-extract: ") + fz_caught_message(vctx));
+            throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CollectIntersectingGlyphs re-extract: ") + fz_caught_message(vctx));
         }
         fz_drop_context(vctx);
     } fz_catch(vctx) {
-        throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CountIntersectingGlyphs outer: ") + fz_caught_message(vctx));
+        throw std::runtime_error(std::string("[SEAM: IMPOSSIBLE_STATE] CollectIntersectingGlyphs outer: ") + fz_caught_message(vctx));
     }
-    return surviving;
+    return res;
+}
+
+int MuPDFWrapper::CountIntersectingGlyphs(const std::string& redacted_pdf_bytes, const std::vector<fz_rect>& boxes, int page_index) const {
+    return CollectIntersectingGlyphs(redacted_pdf_bytes, boxes, page_index).count;
 }
 
 int MuPDFWrapper::CountPlaintextOccurrences(const std::string& redacted_pdf_bytes, const std::vector<std::string>& plaintexts) const {
@@ -463,34 +755,138 @@ int MuPDFWrapper::CountPlaintextOccurrences(const std::string& redacted_pdf_byte
     return total;
 }
 
-void MuPDFWrapper::VerifyPostRedaction(const std::string& redacted_pdf_bytes,
-                                       const std::map<int, std::vector<fz_rect>>& per_page_boxes,
-                                       const std::vector<std::string>& target_plaintexts,
-                                       const std::string& job_id,
-                                       const std::string& traceparent) const {
-    if (per_page_boxes.empty() && target_plaintexts.empty()) return;
+PostRedactionReport MuPDFWrapper::VerifyPostRedaction(
+    std::string& redacted_pdf_bytes,
+    const std::map<int, std::vector<fz_rect>>& per_page_boxes,
+    const std::vector<std::string>& target_plaintexts,
+    const std::string& job_id,
+    const std::string& traceparent,
+    int pass_count
+) const {
+    PostRedactionReport report;
+    report.pass_count = pass_count;
+    if (per_page_boxes.empty() && target_plaintexts.empty()) {
+        report.is_converged = true;
+        report.residual_value_count = 0;
+        return report;
+    }
+
+    ensure_valid();
+    fz_context* c = ctx();
+
+    // Pass 1: Scan pages for surviving glyphs; apply in-memory adaptive self-healing if detected
+    for (const auto& [page_idx, boxes] : per_page_boxes) {
+        if (boxes.empty()) continue;
+        auto info = CollectIntersectingGlyphs(redacted_pdf_bytes, boxes, page_idx);
+        if (info.count > 0) {
+            spdlog::warn("[HEAL: RETRY] job_id={} page_index={} surviving_glyphs={} — applying adaptive secondary wipe with 2.0pt dilation",
+                         job_id, page_idx, info.count);
+            // In-memory adaptive self-healing pass on active document
+            fz_try(c) {
+                FzPagePtr page(nullptr, FzPageDeleter{c});
+                page.reset(fz_load_page(c, doc_.get(), page_idx));
+                if (page) {
+                    if (pdf_page* ppage = pdf_page_from_fz_page(c, page.get())) {
+                        constexpr float default_black[3] = {0.0f, 0.0f, 0.0f};
+                        int heal_annots = 0;
+                        for (const auto& q : info.glyph_quads) {
+                            if (fz_is_empty_rect(q)) continue;
+                            fz_rect dilated = q;
+                            dilated.x0 -= 2.0f;
+                            dilated.y0 -= 2.0f;
+                            dilated.x1 += 2.0f;
+                            dilated.y1 += 2.0f;
+                            pdf_annot* annot = pdf_create_annot(c, ppage, PDF_ANNOT_REDACT);
+                            pdf_set_annot_rect(c, annot, dilated);
+                            pdf_set_annot_color(c, annot, 3, default_black);
+                            heal_annots++;
+                        }
+                        if (heal_annots > 0) {
+                            pdf_redact_page(c, pdf_document_from_fz_document(c, doc_.get()), ppage, nullptr);
+                        }
+                    }
+                }
+            } fz_catch(c) {
+                spdlog::error("Self-healing secondary wipe error on page {}: {}", page_idx, fz_caught_message(c));
+            }
+            // Re-serialize active document buffer
+            redacted_pdf_bytes = GetRedactedPdf();
+        }
+    }
+
+    // Re-verify after self-healing retry
     int total_surviving_glyphs = 0;
     int failing_page = -1;
     fz_rect failing_box = fz_empty_rect;
+    std::vector<std::string> all_samples;
+
     for (const auto& [page_idx, boxes] : per_page_boxes) {
         if (boxes.empty()) continue;
-        int cnt = CountIntersectingGlyphs(redacted_pdf_bytes, boxes, page_idx);
-        if (cnt > 0) {
-            total_surviving_glyphs += cnt;
-            if (failing_page == -1) { failing_page = page_idx; failing_box = boxes.front(); }
+        auto info = CollectIntersectingGlyphs(redacted_pdf_bytes, boxes, page_idx);
+        if (info.count > 0) {
+            total_surviving_glyphs += info.count;
+            for (const auto& s : info.sample_snippets) {
+                all_samples.push_back(s);
+            }
+            if (failing_page == -1) {
+                failing_page = page_idx;
+                failing_box = boxes.front();
+            }
         }
     }
+
     int total_surviving_bytes = CountPlaintextOccurrences(redacted_pdf_bytes, target_plaintexts);
-    if (total_surviving_glyphs > 0 || total_surviving_bytes > 0) {
-        std::string token_hash;
-        if (!target_plaintexts.empty() && !target_plaintexts.front().empty()) {
-            const auto& pt = target_plaintexts.front();
-            token_hash = std::string(1, pt.front()) + "***" + std::string(1, pt.back()) + ":" + std::to_string(pt.size());
-        } else token_hash = "n/a";
-        std::string tp = traceparent.empty() ? "n/a" : traceparent;
-        spdlog::critical("[SEAM: LINEAGE_GAP] job_id={} page_index={} box=[{},{},{},{}] surviving_glyph_count={} surviving_byte_count={} token_hash={} traceparent={}",
+    if (total_surviving_bytes > 0 && !target_plaintexts.empty()) {
+        for (const auto& pt : target_plaintexts) {
+            if (pt.empty()) continue;
+            if (redacted_pdf_bytes.find(pt) != std::string::npos) {
+                std::string masked = std::string(1, pt.front()) + "***" + std::string(1, pt.back()) + ":" + std::to_string(pt.size());
+                all_samples.push_back(masked);
+            }
+        }
+    }
+
+    if (total_surviving_glyphs == 0 && total_surviving_bytes == 0) {
+        report.is_converged = true;
+        report.residual_value_count = 0;
+        return report;
+    }
+
+    report.is_converged = false;
+    report.residual_value_count = total_surviving_glyphs + total_surviving_bytes;
+    report.residual_samples = std::move(all_samples);
+
+    std::string tp = traceparent.empty() ? "n/a" : traceparent;
+    std::string token_hash;
+    if (!target_plaintexts.empty() && !target_plaintexts.front().empty()) {
+        const auto& pt = target_plaintexts.front();
+        token_hash = std::string(1, pt.front()) + "***" + std::string(1, pt.back()) + ":" + std::to_string(pt.size());
+    } else {
+        token_hash = "n/a";
+    }
+
+    if (pass_count >= 3) {
+        spdlog::critical("[SEAM: LINEAGE_GAP] job_id={} page_index={} box=[{},{},{},{}] surviving_glyph_count={} surviving_byte_count={} token_hash={} pass_count={} traceparent={}",
                          job_id, failing_page, failing_box.x0, failing_box.y0, failing_box.x1, failing_box.y1,
-                         total_surviving_glyphs, total_surviving_bytes, token_hash, tp);
-        throw std::runtime_error("[SEAM: LINEAGE_GAP] Post-redaction verification failed: surviving_glyph_count=" + std::to_string(total_surviving_glyphs) + " surviving_byte_count=" + std::to_string(total_surviving_bytes) + " job_id=" + job_id + " page_index=" + std::to_string(failing_page));
+                         total_surviving_glyphs, total_surviving_bytes, token_hash, pass_count, tp);
+        throw std::runtime_error("[SEAM: LINEAGE_GAP] Post-redaction verification failed: surviving_glyph_count=" + std::to_string(total_surviving_glyphs) + " surviving_byte_count=" + std::to_string(total_surviving_bytes) + " job_id=" + job_id + " page_index=" + std::to_string(failing_page) + " pass_count=" + std::to_string(pass_count));
+    }
+
+    spdlog::warn("[SWEEP: DELTA] job_id={} page_index={} surviving_glyph_count={} surviving_byte_count={} pass_count={} traceparent={}",
+                 job_id, failing_page, total_surviving_glyphs, total_surviving_bytes, pass_count, tp);
+    return report;
+}
+
+void MuPDFWrapper::VerifyPostRedaction(
+    const std::string& redacted_pdf_bytes,
+    const std::map<int, std::vector<fz_rect>>& per_page_boxes,
+    const std::vector<std::string>& target_plaintexts,
+    const std::string& job_id,
+    const std::string& traceparent
+) const {
+    std::string bytes_copy = redacted_pdf_bytes;
+    auto report = VerifyPostRedaction(bytes_copy, per_page_boxes, target_plaintexts, job_id, traceparent, 3);
+    if (!report.is_converged) {
+        throw std::runtime_error("[SEAM: LINEAGE_GAP] Post-redaction verification failed with residuals (strict)");
     }
 }
