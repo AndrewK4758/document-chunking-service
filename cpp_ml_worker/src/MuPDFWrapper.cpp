@@ -139,6 +139,9 @@ PageTextData MuPDFWrapper::ExtractPageText(int page_index) const {
                     for (fz_stext_line* line = block->u.t.first_line; line; line = line->next) {
                         for (fz_stext_char* ch = line->first_char; ch; ch = ch->next) {
                             int code = ch->c;
+                            if (code == 0 || (code < 0x20 && code != '\t' && code != '\n' && code != '\r') || code == 0x7F) {
+                                continue;
+                            }
                             fz_rect r = fz_rect_from_quad(ch->quad);
                             if (code >= 0 && code <= 0x7F) {
                                 data.text.push_back(static_cast<char>(code));

@@ -1,13 +1,14 @@
 package server
 
 import (
-	"context"
-	"testing"
+    "context"
+    "testing"
 
-	pb "github.com/AndrewK4758/shared_protos"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/grpc"
-	"document_processing_service/internal/storage"
+    "document_processing_service/internal/storage"
+
+    pb "github.com/AndrewK4758/shared_protos"
+    "github.com/stretchr/testify/assert"
+    "google.golang.org/grpc"
 )
 
 type mockStorageForMl struct {
@@ -59,7 +60,7 @@ func TestHandleCppMLRequest_Success(t *testing.T) {
 	}
 	identity := &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"}
 
-	res, err := server.handleCppMLRequest(context.Background(), req, payload, identity)
+	res, err := server.handleCppMLRequest(context.Background(), payload, identity)
 	assert.NoError(t, err)
 	assert.NotNil(t, res)
 }
@@ -87,7 +88,7 @@ func TestHandleCppMLRequest_PanicOnFailure(t *testing.T) {
 	identity := &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"}
 
 	assert.Panics(t, func() {
-		server.handleCppMLRequest(context.Background(), &pb.ExecuteTaskRequest{}, payload, identity)
+		server.handleCppMLRequest(context.Background(), payload, identity)
 	})
 }
 
@@ -119,7 +120,7 @@ func TestHandleCppMLRequest_WithResidualReport_Success(t *testing.T) {
 	}
 	identity := &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"}
 
-	res, err := server.handleCppMLRequest(context.Background(), req, payload, identity)
+	res, err := server.handleCppMLRequest(context.Background(), payload, identity)
 	assert.NoError(t, err)
 	assert.NotNil(t, res)
 
@@ -166,7 +167,7 @@ func TestHandleCppMLRequest_UnconvergedExhausted_Panics(t *testing.T) {
 	identity := &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"}
 
 	assert.Panics(t, func() {
-		server.handleCppMLRequest(context.Background(), &pb.ExecuteTaskRequest{}, payload, identity)
+		server.handleCppMLRequest(context.Background(), payload, identity)
 	})
 }
 
@@ -197,7 +198,7 @@ func TestHandleDotnetMLRequest_Success(t *testing.T) {
 	}
 	identity := &pb.InfrastructureIdentity{TenantId: "t", AppId: "a", JobId: "j"}
 
-	res, err := server.handleDotnetMLRequest(context.Background(), req, payload, identity)
+	res, err := server.handleDotnetMLRequest(context.Background(), payload, identity)
 	assert.NoError(t, err)
 	assert.NotNil(t, res)
 }

@@ -100,7 +100,7 @@ func (p *ChunkingProcessor) executeAiAction(ctx context.Context, origReq *pb.Exe
 	return stream.Recv()
 }
 
-func parseBoundaryResponse(ctx context.Context, resp *pb.PerformActionResponse) (int, error) {
+func parseBoundaryResponse(resp *pb.PerformActionResponse) (int, error) {
 	if resp == nil {
 		return 0, nil
 	}
@@ -271,7 +271,7 @@ func (p *ChunkingProcessor) InspectDocument(ctx context.Context, req *pb.Execute
 		isScanned = true
 	}
 
-	resultMap := map[string]interface{}{
+	resultMap := map[string]any{
 		"MimeType":        mimeType,
 		"IsScanned":       isScanned,
 		"IsMultiDocument": false,
@@ -335,7 +335,7 @@ func (p *ChunkingProcessor) detectBoundaryInSlice(ctx context.Context, req *pb.C
 	resp, err := p.executeAiAction(ctx, req.OriginalRequest, actionDef, sliceBytes, pb.ModelChoice_MODEL_CHOICE_OCR, req.GetIdentity())
 	sliceBytes = nil
 
-	boundaryPageInSlice, unmarshalErr := parseBoundaryResponse(ctx, resp)
+	boundaryPageInSlice, unmarshalErr := parseBoundaryResponse(resp)
 	if unmarshalErr != nil {
 		addTrace(fmt.Sprintf("Failed to unmarshal boundary detection response: %v", unmarshalErr), "ERROR")
 		return 0, fmt.Errorf("[Step: SLICING, URI: %s] failed to unmarshal boundary detection response: %w", docUri, unmarshalErr)

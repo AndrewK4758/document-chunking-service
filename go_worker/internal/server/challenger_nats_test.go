@@ -39,18 +39,18 @@ func TestChallenger_NatsStructUnmarshaling_PreservesIsScanned(t *testing.T) {
 	}
 
 	// 2. Unmarshal into generic map to check JSON payload structure
-	var rawMap map[string]interface{}
+	var rawMap map[string]any
 	err = json.Unmarshal(jsonBytes, &rawMap)
 	if err != nil {
 		t.Fatalf("json.Unmarshal rawMap error: %v", err)
 	}
 
-	docList, ok := rawMap["documents"].([]interface{})
+	docList, ok := rawMap["documents"].([]any)
 	if !ok || len(docList) != 2 {
 		t.Fatalf("Expected 'documents' array with 2 items in rawMap, got: %v", rawMap)
 	}
 
-	doc0, ok := docList[0].(map[string]interface{})
+	doc0, ok := docList[0].(map[string]any)
 	if !ok {
 		t.Fatalf("Expected doc 0 to be a map")
 	}
@@ -59,7 +59,7 @@ func TestChallenger_NatsStructUnmarshaling_PreservesIsScanned(t *testing.T) {
 		t.Errorf("Doc 0 (scanned): expected is_scanned=true, got exists=%v, val=%v", exists, isScanned)
 	}
 
-	doc1, ok := docList[1].(map[string]interface{})
+	doc1, ok := docList[1].(map[string]any)
 	if !ok {
 		t.Fatalf("Expected doc 1 to be a map")
 	}

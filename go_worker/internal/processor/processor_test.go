@@ -1,19 +1,20 @@
 package processor
 
 import (
-	"archive/zip"
-	"bytes"
-	"context"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
+    "bytes"
+    "context"
+    "errors"
+    "io"
+    "os"
+    "path/filepath"
+    "strings"
+    "testing"
 
-	"google.golang.org/grpc"
+    "document_processing_service/internal/testutil"
 
-	pb "github.com/AndrewK4758/shared_protos"
-	"google.golang.org/protobuf/types/known/structpb"
+    pb "github.com/AndrewK4758/shared_protos"
+    "google.golang.org/grpc"
+    "google.golang.org/protobuf/types/known/structpb"
 )
 
 // mockAiClient is a simple mock for the gRPC client
@@ -66,26 +67,7 @@ func (m *mockStorage) SaveFile(ctx context.Context, relPath string, identity *pb
 
 func createTestZip(t *testing.T, files map[string]string, zipPath string) {
 	t.Helper()
-	outFile, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatalf("Failed to create test zip file: %v", err)
-	}
-	defer outFile.Close()
-
-	w := zip.NewWriter(outFile)
-	for name, content := range files {
-		f, err := w.Create(name)
-		if err != nil {
-			t.Fatalf("Failed to add file to zip: %v", err)
-		}
-		_, err = f.Write([]byte(content))
-		if err != nil {
-			t.Fatalf("Failed to write content to zip file: %v", err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Failed to close zip writer: %v", err)
-	}
+	testutil.CreateTestZip(t, files, zipPath)
 }
 
 func TestProcessZipFile_HappyPath(t *testing.T) {
@@ -100,13 +82,13 @@ func TestProcessZipFile_HappyPath(t *testing.T) {
 
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "test.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "test.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -156,13 +138,13 @@ func TestProcessZipFile_InvalidZip(t *testing.T) {
 	}
 
 	store := &mockStorage{basePath: tempDir}
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "bad.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "bad.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -194,13 +176,13 @@ func TestProcessZipFile_ZipSlip(t *testing.T) {
 
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "slip.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "slip.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -235,13 +217,13 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "dummy.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "dummy.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -259,7 +241,7 @@ func TestProcessZipFile_ContextCancel(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error due to context cancellation, got nil")
 	}
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Expected context.Canceled error, got %v", err)
 	}
 }
@@ -270,13 +252,13 @@ func TestProcessZipFile_StorageDown(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "missing_from_storage.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "missing_from_storage.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -310,13 +292,13 @@ func TestProcessZipFile_MissingBoundaryDetectionPrompt(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	zipBytes, _ := os.ReadFile(zipPath)
 	// Create mock AiClient non-nil so sliding window attempts AI call
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "multi.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "multi.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split":    float64(1),
 			"sliding_window_size":       float64(5),
 			"doc_type_corrupted":        "corrupted",
@@ -344,13 +326,13 @@ func TestProcessZipFile_EnrichedErrorFormat(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	chunker := NewChunkingProcessor(nil, store)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "internal-store://tenant/app/job/missing.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "internal-store://tenant/app/job/missing.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -537,13 +519,13 @@ func TestProcessZipFile_PDFTypeDetection(t *testing.T) {
 		t.Fatalf("Failed to read test zip: %v", err)
 	}
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "mixed_type.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "mixed_type.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",

@@ -179,7 +179,7 @@ func (fsm *LogicalBoundaryFSM) Finalize() []SubDocumentSlice {
 		if slice.EndPage < slice.StartPage {
 			panic(fmt.Errorf("action failed: inverted slice bounds: start %d, end %d", slice.StartPage, slice.EndPage))
 		}
-		totalPagesInSlices += (slice.EndPage - slice.StartPage + 1)
+		totalPagesInSlices += slice.EndPage - slice.StartPage + 1
 		expectedNextStart = slice.EndPage + 1
 	}
 

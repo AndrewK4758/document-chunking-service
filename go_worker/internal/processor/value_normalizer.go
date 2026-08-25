@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"maps"
 	"fmt"
 	"math"
 	"regexp"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AndrewK4758/shared_utils/jsonclean"
 )
 
 // Pre-compiled regex for money parsing
@@ -30,9 +33,7 @@ func GetValueNormTotals() map[string]int {
 	valueNormTotalMu.Lock()
 	defer valueNormTotalMu.Unlock()
 	cp := make(map[string]int, len(valueNormTotals))
-	for k, v := range valueNormTotals {
-		cp[k] = v
-	}
+	maps.Copy(cp, valueNormTotals)
 	return cp
 }
 
@@ -48,6 +49,7 @@ func ResetValueNormTotals() {
 // Date: "12/24/2025"/"24/12/2025"/"12/24/2025 10:00am" -> "2025-12-24"
 // Label-key (file_number etc): returns raw unchanged
 func NormalizeValue(text, canonical string) (string, error) {
+	text = jsonclean.SanitizeString(text)
 	trimmed := strings.TrimSpace(text)
 	canonLower := strings.ToLower(strings.TrimSpace(canonical))
 
@@ -134,8 +136,8 @@ func normalizeMoney(s string) (string, error) {
 	cleaned = strings.TrimSpace(cleaned)
 	// Handle "k" suffix like "125k"
 	lower := strings.ToLower(cleaned)
-	if strings.HasSuffix(lower, "k") {
-		numPart := strings.TrimSuffix(lower, "k")
+	if before, ok :=strings.CutSuffix(lower, "k"); ok  {
+		numPart := before
 		f, err := strconv.ParseFloat(strings.TrimSpace(numPart), 64)
 		if err != nil {
 			return "", err
@@ -254,24 +256,3 @@ func normalizeDate(s string) (string, error) {
 
 // CanonicalizeLabelValue performs label normalization + value normalization and builds NormalizedExtract.
 // This is the Go post-processor entry point.
-func CanonicalizeLabelValue(rawText, spanLabel string, confidence float64, page int32, reverse map[string]string, expander *Expander) (NormalizedExtract, error) {
-	canonical, matched, _ := NormalizeSpanLabel(spanLabel, reverse, expander)
-	normVal, err := NormalizeValue(rawText, canonical)
-	if err != nil {
-		// For label-key types, NormalizeValue returns raw; error only for money/date
-		if IsFailFast() {
-			return NormalizedExtract{}, err
-		}
-		// Non-fail-fast: fallback to raw
-		normVal = rawText
-	}
-	ext := NormalizedExtract{
-		RawText:         rawText,
-		NormalizedValue: normVal,
-		CanonicalKey:    canonical,
-		MatchedSynonym:  matched,
-		Confidence:      confidence,
-		Page:            page,
-	}
-	return ext, nil
-}

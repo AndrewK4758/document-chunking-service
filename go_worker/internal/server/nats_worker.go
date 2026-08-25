@@ -24,6 +24,7 @@ import (
 
 	pb "github.com/AndrewK4758/shared_protos"
 	"github.com/AndrewK4758/shared_utils/identityparser"
+	"github.com/AndrewK4758/shared_utils/jsonclean"
 	"github.com/AndrewK4758/shared_utils/logger"
 	"github.com/AndrewK4758/shared_utils/natsutil"
 	"github.com/AndrewK4758/shared_utils/workflowparser"
@@ -177,7 +178,7 @@ func (s *NatsServer) ackMessage(msg jetstream.Msg, startTime time.Time, identity
 }
 
 func buildDocsStructResult(docs []*pb.ProcessedDocument) (*structpb.Struct, error) {
-	docList := make([]interface{}, len(docs))
+	docList := make([]any, len(docs))
 	m := protojson.MarshalOptions{
 		UseProtoNames:   true,
 		EmitUnpopulated: true,
@@ -187,16 +188,17 @@ func buildDocsStructResult(docs []*pb.ProcessedDocument) (*structpb.Struct, erro
 		if err != nil {
 			return nil, err
 		}
-		var docMap map[string]interface{}
+		var docMap map[string]any
 		if err := json.Unmarshal(docBytes, &docMap); err != nil {
 			return nil, err
 		}
 		docList[i] = docMap
 	}
 	
-	resultMap := map[string]interface{}{
+	resultMap := map[string]any{
 		"documents": docList,
 	}
+	resultMap = jsonclean.SanitizeMap(resultMap)
 	return structpb.NewStruct(resultMap)
 }
 
@@ -390,25 +392,35 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 			logger.Info("DocProcessor", "[%s] %s", level, msg)
 		})
 	case "worker.doc.processing.cpp_ml":
-		structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
+		structResult, processErr = s.handleCppMLRequest(ctx, executeTaskPayload, identity)
 	case "worker.doc.processing.dotnet_ml":
-		structResult, processErr = s.handleDotnetMLRequest(ctx, &req, executeTaskPayload, identity)
+		structResult, processErr = s.handleDotnetMLRequest(ctx, executeTaskPayload, identity)
 	case "worker.doc.processing.dual_ml":
 		structResult, processErr = s.handleDualMLRequest(ctx, &req, executeTaskPayload, identity)
 	default:
 		// Autonomous Routing Logic: Evaluate complexity
-		pageCount := int32(0)
-		if executeTaskPayload.Storage != nil {
-			pageCount = executeTaskPayload.Storage.PageCount
+		threshold := envutil.GetIntOrDefault("ML_ROUTING_PAGE_THRESHOLD", 1)
+		pageCount := executeTaskPayload.Storage.PageCount
+		isScanned := false
+		if funcState, err := parser.GetFunctionalState(); err == nil && funcState != nil {
+			if v, ok := funcState["is_scanned"]; ok {
+				if b, ok := v.(bool); ok {
+					isScanned = b
+				}
+			} else if v, ok := funcState["IsScanned"]; ok {
+				if b, ok := v.(bool); ok {
+					isScanned = b
+				}
+			}
 		}
 
-		if true { // TEMPORARY: Force all to ML service for testing
-			logger.Info("DocProcessor", "Document is complex (PageCount: %d). Routing to CPP ML Worker (JobID: %s)", pageCount, identity.GetJobId())
-			structResult, processErr = s.handleCppMLRequest(ctx, &req, executeTaskPayload, identity)
+		if pageCount > int32(threshold) || isScanned {
+			logger.Info("DocProcessor", "Document is complex (PageCount: %d, IsScanned: %v). Routing to CPP ML Worker (JobID: %s)", pageCount, isScanned, identity.GetJobId())
+			structResult, processErr = s.handleCppMLRequest(ctx, executeTaskPayload, identity)
 			break
 		}
 
-		logger.Info("DocProcessor", "Document is simple (PageCount: %d). Forwarding to AI Inference (JobID: %s)", pageCount, identity.GetJobId())
+		logger.Info("DocProcessor", "Document is simple (PageCount: %d, IsScanned: %v). Forwarding to AI Inference (JobID: %s)", pageCount, isScanned, identity.GetJobId())
 		
 		req.TaskSubject = "worker.ai.inference"
 		forwardData, marshalErr := proto.Marshal(&req)
@@ -486,13 +498,13 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 	s.ackMessage(msg, startTime, identity, attempt)
 }
 
-func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTaskRequest, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (res *structpb.Struct, err error) {
+func (s *NatsServer) startMLMetric(identity *pb.InfrastructureIdentity, stepName string) func(err *error) {
 	now := time.Now()
 	metric := db.MlMetric{
 		TenantID:  identity.GetTenantId(),
 		AppID:     identity.GetAppId(),
 		JobID:     identity.GetJobId(),
-		StepName:  "RedactPii",
+		StepName:  stepName,
 		Status:    "STARTED",
 		StartedAt: now,
 	}
@@ -500,10 +512,10 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 		s.db.Create(&metric)
 	}
 
-	defer func() {
-		if err != nil {
+	return func(err *error) {
+		if err != nil && *err != nil {
 			metric.Status = "FAILED"
-			metric.ErrorMessage = err.Error()
+			metric.ErrorMessage = (*err).Error()
 		} else {
 			metric.Status = "COMPLETED"
 		}
@@ -512,7 +524,11 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 		if s.db != nil {
 			s.db.Save(&metric)
 		}
-	}()
+	}
+}
+
+func (s *NatsServer) handleCppMLRequest(ctx context.Context, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (res *structpb.Struct, err error) {
+	defer s.startMLMetric(identity, "RedactPii")(&err)
 
 	// Boundary: gRPC call to cpp_ml_worker — MPL-320 taxonomy expansion
 	// We dispatch a synchronous gRPC call passing the RedactDocumentRequest using the Document URI.
@@ -557,7 +573,7 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 		}
 	}
 
-	resultMap := map[string]interface{}{
+	resultMap := map[string]any{
 		"redacted_document_uri": payload.Storage.DocumentUri,
 	}
 
@@ -569,11 +585,11 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 			}
 		}
 		rawSamples := rep.GetResidualSamples()
-		samples := make([]interface{}, len(rawSamples))
+		samples := make([]any, len(rawSamples))
 		for i, sample := range rawSamples {
 			samples[i] = sample
 		}
-		resultMap["residual_report"] = map[string]interface{}{
+		resultMap["residual_report"] = map[string]any{
 			"is_converged":         rep.GetIsConverged(),
 			"residual_value_count": rep.GetResidualValueCount(),
 			"residual_samples":     samples,
@@ -581,6 +597,7 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 		}
 	}
 
+	resultMap = jsonclean.SanitizeMap(resultMap)
 	resStruct, structErr := structpb.NewStruct(resultMap)
 	if structErr != nil {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: failed to create structResult: %w", structErr))
@@ -589,33 +606,8 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, req *pb.ExecuteTask
 	return resStruct, nil
 }
 
-func (s *NatsServer) handleDotnetMLRequest(ctx context.Context, req *pb.ExecuteTaskRequest, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (res *structpb.Struct, err error) {
-	now := time.Now()
-	metric := db.MlMetric{
-		TenantID:  identity.GetTenantId(),
-		AppID:     identity.GetAppId(),
-		JobID:     identity.GetJobId(),
-		StepName:  "RedactPii_DotNet",
-		Status:    "STARTED",
-		StartedAt: now,
-	}
-	if s.db != nil {
-		s.db.Create(&metric)
-	}
-
-	defer func() {
-		if err != nil {
-			metric.Status = "FAILED"
-			metric.ErrorMessage = err.Error()
-		} else {
-			metric.Status = "COMPLETED"
-		}
-		comp := time.Now()
-		metric.CompletedAt = &comp
-		if s.db != nil {
-			s.db.Save(&metric)
-		}
-	}()
+func (s *NatsServer) handleDotnetMLRequest(ctx context.Context, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (res *structpb.Struct, err error) {
+	defer s.startMLMetric(identity, "RedactPii_DotNet")(&err)
 
 	if s.dotnetMlClient == nil {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: Dotnet ML client not configured"))
@@ -645,9 +637,10 @@ func (s *NatsServer) handleDotnetMLRequest(ctx context.Context, req *pb.ExecuteT
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: failed to save redacted document: %w", err))
 	}
 
-	resultMap := map[string]interface{}{
+	resultMap := map[string]any{
 		"redacted_document_uri": redactedUri,
 	}
+	resultMap = jsonclean.SanitizeMap(resultMap)
 
 	resStruct, structErr := structpb.NewStruct(resultMap)
 	if structErr != nil {
@@ -668,17 +661,17 @@ func (s *NatsServer) handleDualMLRequest(ctx context.Context, req *pb.ExecuteTas
 
 	go func() {
 		defer wg.Done()
-		cppResult, cppErr = s.handleCppMLRequest(ctx, req, payload, identity)
+		cppResult, cppErr = s.handleCppMLRequest(ctx, payload, identity)
 	}()
 
 	go func() {
 		defer wg.Done()
-		dotnetResult, dotnetErr = s.handleDotnetMLRequest(ctx, req, payload, identity)
+		dotnetResult, dotnetErr = s.handleDotnetMLRequest(ctx, payload, identity)
 	}()
 
 	wg.Wait()
 
-	diffMetrics := map[string]interface{}{
+	diffMetrics := map[string]any{
 		"cpp_has_error":     cppErr != nil,
 		"dotnet_has_error":  dotnetErr != nil,
 		"cpp_keys_count":    0,

@@ -29,7 +29,7 @@ func TestChallenger_ParallelDetectionAndGoroutineLeak(t *testing.T) {
 
 	errCh := make(chan error, concurrency)
 
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		go func(idx int) {
 			defer wg.Done()
 			path := textPdfPath
@@ -89,13 +89,13 @@ func TestChallenger_ParallelProcessZipFileAndGoroutineLeak(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "parallel.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "parallel.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size": float64(5),
 			"doc_type_corrupted": "corrupted",
@@ -115,7 +115,7 @@ func TestChallenger_ParallelProcessZipFileAndGoroutineLeak(t *testing.T) {
 		Payload:     payload,
 	}
 
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		go func(idx int) {
 			defer wg.Done()
 			chunker := NewChunkingProcessor(nil, store)
@@ -179,13 +179,13 @@ func TestChallenger_TempFileCleanupIsolation(t *testing.T) {
 
 	chunker := NewChunkingProcessor(nil, store)
 
-	cleanupPayload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	cleanupPayload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "cleanup.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "cleanup.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size": float64(5),
 			"doc_type_corrupted": "corrupted",
@@ -205,7 +205,7 @@ func TestChallenger_TempFileCleanupIsolation(t *testing.T) {
 		Payload:     cleanupPayload,
 	}
 
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		_, _, err := chunker.ProcessZipFile(context.Background(), &pb.ChunkDocumentRequest{
 			RawFileBytes:    zipBytes,
 			OriginalRequest: cleanupReq,

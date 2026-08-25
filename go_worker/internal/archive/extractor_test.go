@@ -2,37 +2,19 @@ package archive
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"document_processing_service/internal/testutil"
 )
 
 func createTestZip(t *testing.T, files map[string]string, zipPath string) {
 	t.Helper()
-	outFile, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatalf("Failed to create zip file: %v", err)
-	}
-	defer outFile.Close()
-
-	w := zip.NewWriter(outFile)
-	for name, content := range files {
-		f, err := w.Create(name)
-		if err != nil {
-			t.Fatalf("Failed to add file to zip: %v", err)
-		}
-		_, err = f.Write([]byte(content))
-		if err != nil {
-			t.Fatalf("Failed to write to zip: %v", err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Failed to close zip writer: %v", err)
-	}
+	testutil.CreateTestZip(t, files, zipPath)
 }
 
 func createTestTarGz(t *testing.T, files map[string]string, tarPath string) {

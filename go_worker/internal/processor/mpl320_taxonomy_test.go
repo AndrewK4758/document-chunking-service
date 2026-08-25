@@ -60,7 +60,7 @@ func TestS13_BudgetExceededFailFastDev(t *testing.T) {
 	tax := make(Taxonomy)
 	// Build 250 unique labels via 250 canonicals
 	canonicals := make([]string, 250)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		k := strings.Repeat("a", 5) + strings.Repeat("b", 3) + string(rune('0'+i%10)) + string(rune('a'+i/10))
 		// Simpler: use unique keys
 		k = "key_" + strings.Repeat("x", 10) + "_" + string(rune(65+i%26)) + string(rune(48+i/26))
@@ -247,7 +247,7 @@ func TestValidateTaxonomy_MaxSynonyms(t *testing.T) {
 // O(1) expansion performance sanity
 func TestExpansion_O1Performance(t *testing.T) {
 	tax := make(Taxonomy)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		k := "canon_" + strings.Repeat("a", 2) + string(rune(65+i))
 		tax[k] = []string{"syn1_" + k, "syn2_" + k}
 	}
@@ -297,7 +297,7 @@ func TestBudget_4MBGuard(t *testing.T) {
 	exp := NewExpander(tax, "hash")
 	// Provide many canonicals with large synonyms but we need to exceed totalBytes
 	canonicals := []string{"canon1"}
-	for i := 0; i < 80; i++ {
+	for i := range 80 {
 		k := "uniq_" + string(rune(65+i)) + strings.Repeat("y", 40000)
 		tax[k] = []string{strings.Repeat("z", 40000)}
 		canonicals = append(canonicals, k)

@@ -1,10 +1,11 @@
 package server
 
 import (
-	"context"
-	pb "github.com/AndrewK4758/shared_protos"
-	"google.golang.org/grpc"
-	"io"
+    "context"
+    "io"
+
+    pb "github.com/AndrewK4758/shared_protos"
+    "google.golang.org/grpc"
 )
 
 type mockChunkDocumentServer struct {

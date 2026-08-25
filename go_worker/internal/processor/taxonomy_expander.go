@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"maps"
 	"context"
 	"fmt"
 	"log/slog"
@@ -96,9 +97,7 @@ func (e *Expander) AllCollisions() map[string]int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	cp := make(map[string]int, len(e.collisions))
-	for k, v := range e.collisions {
-		cp[k] = v
-	}
+	maps.Copy(cp, e.collisions)
 	return cp
 }
 
@@ -348,11 +347,3 @@ func PropagateTraceContext(ctx context.Context) context.Context {
 }
 
 // PropagateTraceWithHash is convenience that also attaches taxonomy_hash as span attribute.
-func PropagateTraceWithHash(ctx context.Context, hash string) context.Context {
-	ctx = PropagateTraceContext(ctx)
-	if hash != "" {
-		ctx = metadata.AppendToOutgoingContext(ctx, "taxonomy_hash", hash, "taxonomy_hash", hash)
-		// Deduplicate: grpc metadata Append duplicates; use single
-	}
-	return ctx
-}

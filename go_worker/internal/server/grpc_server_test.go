@@ -1,17 +1,18 @@
 package server
 
 import (
-	"archive/zip"
-	"context"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
+    "context"
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+    "strings"
+    "testing"
 
-	pb "github.com/AndrewK4758/shared_protos"
-	"google.golang.org/protobuf/types/known/structpb"
+    "document_processing_service/internal/testutil"
+
+    pb "github.com/AndrewK4758/shared_protos"
+    "google.golang.org/protobuf/types/known/structpb"
 )
 
 // mockStorage provides a dummy local disk storage for unit tests
@@ -34,31 +35,6 @@ func (m *mockStorage) SaveFile(ctx context.Context, relPath string, identity *pb
 	return relPath, err
 }
 
-// Helper function to create a test zip
-func createTestZip(t *testing.T, files map[string]string, zipPath string) {
-	t.Helper()
-	outFile, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatalf("Failed to create test zip file: %v", err)
-	}
-	defer outFile.Close()
-
-	w := zip.NewWriter(outFile)
-	for name, content := range files {
-		f, err := w.Create(name)
-		if err != nil {
-			t.Fatalf("Failed to add file to zip: %v", err)
-		}
-		_, err = f.Write([]byte(content))
-		if err != nil {
-			t.Fatalf("Failed to write content to zip file: %v", err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Failed to close zip writer: %v", err)
-	}
-}
-
 func TestChunkDocument_Success(t *testing.T) {
 	tempDir := t.TempDir()
 	store := &mockStorage{basePath: tempDir}
@@ -66,18 +42,18 @@ func TestChunkDocument_Success(t *testing.T) {
 
 	zipPath := filepath.Join(tempDir, "test_valid.zip")
 
-	createTestZip(t, map[string]string{
+	testutil.CreateTestZip(t, map[string]string{
 		"doc1.pdf": "dummy",
 	}, zipPath)
 
 	zipBytes, _ := os.ReadFile(zipPath)
-	payload1, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload1, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "test_valid.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "test_valid.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -116,13 +92,13 @@ func TestChunkDocument_Failure(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	srv := NewDocumentProcessingServer(nil, nil, nil, store)
 
-	payload2, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload2, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "nonexistent/path/to/bad.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "nonexistent/path/to/bad.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -159,10 +135,10 @@ func TestChunkDocument_Failure(t *testing.T) {
 func TestChunkDocument_EmptyRequest(t *testing.T) {
 	srv := NewDocumentProcessingServer(nil, nil, nil, nil)
 
-	payload3, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload3, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
 	})
 	req := &pb.ChunkDocumentRequest{

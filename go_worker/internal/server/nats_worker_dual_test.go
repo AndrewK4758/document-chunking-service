@@ -58,10 +58,10 @@ func TestProcessMessage_DualMLRequest(t *testing.T) {
 		store:          &mockStorageManager{},
 	}
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{},
-		"storage": map[string]interface{}{
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{},
+		"storage": map[string]any{
 			"document_uri": "test_doc_uri.pdf",
 		},
 	})

@@ -1,7 +1,6 @@
 package archive
 
 import (
-	"archive/zip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,17 +24,9 @@ func TestAdversarial_Extract_ZipWithDirectoriesOnly(t *testing.T) {
 	tempDir := t.TempDir()
 	zipPath := filepath.Join(tempDir, "dirs_only.zip")
 
-	outFile, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatalf("Failed to create zip: %v", err)
-	}
-	w := zip.NewWriter(outFile)
-	_, err = w.Create("nested_folder/")
-	if err != nil {
-		t.Fatalf("Failed to create dir entry in zip: %v", err)
-	}
-	w.Close()
-	outFile.Close()
+	createTestZip(t, map[string]string{
+		"nested_folder/": "",
+	}, zipPath)
 
 	destDir := t.TempDir()
 	extracted, err := Extract(zipPath, destDir)
@@ -51,18 +42,9 @@ func TestAdversarial_Extract_ZipPathTraversalProtection(t *testing.T) {
 	tempDir := t.TempDir()
 	zipPath := filepath.Join(tempDir, "traversal.zip")
 
-	outFile, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatalf("Failed to create zip: %v", err)
-	}
-	w := zip.NewWriter(outFile)
-	f, err := w.Create("../outside.pdf")
-	if err != nil {
-		t.Fatalf("Failed to create entry in zip: %v", err)
-	}
-	f.Write([]byte("malicious content"))
-	w.Close()
-	outFile.Close()
+	createTestZip(t, map[string]string{
+		"../outside.pdf": "malicious content",
+	}, zipPath)
 
 	destDir := t.TempDir()
 	extracted, err := Extract(zipPath, destDir)

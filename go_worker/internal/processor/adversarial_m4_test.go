@@ -43,18 +43,18 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		payload       map[string]interface{}
+		payload       map[string]any
 		expectedError string
 	}{
 		{
 			name: "Missing MaxPagesBeforeSplit",
-			payload: map[string]interface{}{
-				"node_config": map[string]interface{}{},
-				"global_state": map[string]interface{}{
-					"functional": map[string]interface{}{},
+			payload: map[string]any{
+				"node_config": map[string]any{},
+				"global_state": map[string]any{
+					"functional": map[string]any{},
 				},
-				"storage": map[string]interface{}{"document_uri": "test.pdf"},
-				"document_processor": map[string]interface{}{
+				"storage": map[string]any{"document_uri": "test.pdf"},
+				"document_processor": map[string]any{
 					"sliding_window_size": float64(5),
 					"doc_type_corrupted":  "corrupted",
 				},
@@ -63,13 +63,13 @@ func TestAdversarial_ProcessZipFile_MissingConfigValidation(t *testing.T) {
 		},
 		{
 			name: "Missing DocTypeCorrupted",
-			payload: map[string]interface{}{
-				"node_config": map[string]interface{}{},
-				"global_state": map[string]interface{}{
-					"functional": map[string]interface{}{},
+			payload: map[string]any{
+				"node_config": map[string]any{},
+				"global_state": map[string]any{
+					"functional": map[string]any{},
 				},
-				"storage": map[string]interface{}{"document_uri": "test.pdf"},
-				"document_processor": map[string]interface{}{
+				"storage": map[string]any{"document_uri": "test.pdf"},
+				"document_processor": map[string]any{
 					"max_pages_before_split": float64(10),
 					"sliding_window_size":    float64(5),
 				},
@@ -106,13 +106,13 @@ func TestAdversarial_ProcessZipFile_ZeroByteRawBytes(t *testing.T) {
 	store := &mockFailingStorage{failFetch: true}
 	chunker := NewChunkingProcessor(nil, store)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "internal-store://tenant/app/job/doc.pdf"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "internal-store://tenant/app/job/doc.pdf"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",
@@ -141,13 +141,13 @@ func TestAdversarial_ProcessZipFile_ContextDoneEarly(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-1*time.Second))
 	defer cancel()
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "internal-store://t/a/j1/doc.pdf"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "internal-store://t/a/j1/doc.pdf"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size":    float64(5),
 			"doc_type_corrupted":     "corrupted",

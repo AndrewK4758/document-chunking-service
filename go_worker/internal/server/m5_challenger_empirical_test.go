@@ -47,7 +47,7 @@ func TestEmpirical_NatsWorker_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("PayloadWithNonStringDocumentUri_Panics", func(t *testing.T) {
-		payload, err := structpb.NewStruct(map[string]interface{}{
+		payload, err := structpb.NewStruct(map[string]any{
 			"document_uri": 12345, // integer instead of string
 		})
 		assert.NoError(t, err)
@@ -70,7 +70,7 @@ func TestEmpirical_NatsWorker_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("PayloadWithBooleanDocumentUri_Panics", func(t *testing.T) {
-		payload, err := structpb.NewStruct(map[string]interface{}{
+		payload, err := structpb.NewStruct(map[string]any{
 			"document_uri": true,
 		})
 		assert.NoError(t, err)

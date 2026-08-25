@@ -2,7 +2,8 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
+    "errors"
+    "fmt"
 	"os"
 	"path/filepath"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
-	gorm_postgres "gorm.io/driver/postgres"
+	gormpostgres "gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -65,14 +66,14 @@ func InitDB() *gorm.DB {
 	}
 
 	err = m.Up()
-	if err != nil && err != migrate.ErrNoChange {
+	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		panic(fmt.Errorf("failed to run migrations: %w", err))
 	}
 
 	logger.Info("DB", "Successfully ran database migrations.")
 
 	// Connect GORM
-	gormDB, err := gorm.Open(gorm_postgres.Open(dsn), &gorm.Config{})
+	gormDB, err := gorm.Open(gormpostgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		panic(fmt.Errorf("failed to connect to gorm: %w", err))
 	}

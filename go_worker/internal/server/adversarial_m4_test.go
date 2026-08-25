@@ -73,13 +73,13 @@ func TestAdversarial_GRPC_StreamSendError(t *testing.T) {
 	store := &mockStorage{basePath: tempDir}
 	srv := NewDocumentProcessingServer(nil, nil, nil, store)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
 		},
-		"storage": map[string]interface{}{"document_uri": "nonexistent.zip"},
-		"document_processor": map[string]interface{}{
+		"storage": map[string]any{"document_uri": "nonexistent.zip"},
+		"document_processor": map[string]any{
 			"max_pages_before_split": float64(10),
 			"sliding_window_size": float64(5),
 			"doc_type_corrupted": "corrupted",

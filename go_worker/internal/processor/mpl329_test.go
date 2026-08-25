@@ -52,6 +52,30 @@ startxref
 %%EOF`
 }
 
+func createMPL329TestPayload() *structpb.Struct {
+	payload, _ := structpb.NewStruct(map[string]any{
+		"node_config": map[string]any{},
+		"global_state": map[string]any{
+			"functional": map[string]any{},
+			"execution":  map[string]any{},
+		},
+		"storage": map[string]any{
+			"document_uri": "test.zip",
+		},
+		"document_processor": map[string]any{
+			"max_pages_before_split":    float64(5),
+			"sliding_window_size":       float64(2),
+			"doc_type_classified":       "SINGLE_DOC",
+			"doc_type_chunked":          "CHUNKED_DOC",
+			"doc_type_corrupted":        "CORRUPTED_DOC",
+			"action_name_classify":      "classify",
+			"action_name_boundary":      "boundary",
+			"boundary_detection_prompt": "detect",
+		},
+	})
+	return payload
+}
+
 func TestMPL329_GoWorker_ResidualSweepReport_Converged(t *testing.T) {
 	tempDir := t.TempDir()
 	zipPath := filepath.Join(tempDir, "test.zip")
@@ -74,27 +98,6 @@ func TestMPL329_GoWorker_ResidualSweepReport_Converged(t *testing.T) {
 	proc := NewChunkingProcessor(nil, store)
 	proc.SetCppMlClient(mockClient)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
-			"execution":  map[string]interface{}{},
-		},
-		"storage": map[string]interface{}{
-			"document_uri": "test.zip",
-		},
-		"document_processor": map[string]interface{}{
-			"max_pages_before_split":   float64(5),
-			"sliding_window_size":      float64(2),
-			"doc_type_classified":      "SINGLE_DOC",
-			"doc_type_chunked":         "CHUNKED_DOC",
-			"doc_type_corrupted":       "CORRUPTED_DOC",
-			"action_name_classify":     "classify",
-			"action_name_boundary":     "boundary",
-			"boundary_detection_prompt": "detect",
-		},
-	})
-
 	req := &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{
 			TenantId: "tenant-1",
@@ -102,7 +105,7 @@ func TestMPL329_GoWorker_ResidualSweepReport_Converged(t *testing.T) {
 			JobId:    "job-mpl329-01",
 		},
 		OriginalRequest: &pb.ExecuteTaskRequest{
-			Payload: payload,
+			Payload: createMPL329TestPayload(),
 		},
 	}
 
@@ -149,27 +152,6 @@ func TestMPL329_GoWorker_ResidualSweepReport_Pass1_Delta(t *testing.T) {
 	proc := NewChunkingProcessor(nil, store)
 	proc.SetCppMlClient(mockClient)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
-			"execution":  map[string]interface{}{},
-		},
-		"storage": map[string]interface{}{
-			"document_uri": "test.zip",
-		},
-		"document_processor": map[string]interface{}{
-			"max_pages_before_split":   float64(5),
-			"sliding_window_size":      float64(2),
-			"doc_type_classified":      "SINGLE_DOC",
-			"doc_type_chunked":         "CHUNKED_DOC",
-			"doc_type_corrupted":       "CORRUPTED_DOC",
-			"action_name_classify":     "classify",
-			"action_name_boundary":     "boundary",
-			"boundary_detection_prompt": "detect",
-		},
-	})
-
 	req := &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{
 			TenantId: "tenant-1",
@@ -177,7 +159,7 @@ func TestMPL329_GoWorker_ResidualSweepReport_Pass1_Delta(t *testing.T) {
 			JobId:    "job-mpl329-02",
 		},
 		OriginalRequest: &pb.ExecuteTaskRequest{
-			Payload: payload,
+			Payload: createMPL329TestPayload(),
 		},
 	}
 
@@ -224,27 +206,6 @@ func TestMPL329_GoWorker_ResidualSweepReport_Pass3_FailFastLineageGap(t *testing
 	proc := NewChunkingProcessor(nil, store)
 	proc.SetCppMlClient(mockClient)
 
-	payload, _ := structpb.NewStruct(map[string]interface{}{
-		"node_config": map[string]interface{}{},
-		"global_state": map[string]interface{}{
-			"functional": map[string]interface{}{},
-			"execution":  map[string]interface{}{},
-		},
-		"storage": map[string]interface{}{
-			"document_uri": "test.zip",
-		},
-		"document_processor": map[string]interface{}{
-			"max_pages_before_split":   float64(5),
-			"sliding_window_size":      float64(2),
-			"doc_type_classified":      "SINGLE_DOC",
-			"doc_type_chunked":         "CHUNKED_DOC",
-			"doc_type_corrupted":       "CORRUPTED_DOC",
-			"action_name_classify":     "classify",
-			"action_name_boundary":     "boundary",
-			"boundary_detection_prompt": "detect",
-		},
-	})
-
 	req := &pb.ChunkDocumentRequest{
 		Identity: &pb.InfrastructureIdentity{
 			TenantId: "tenant-1",
@@ -252,7 +213,7 @@ func TestMPL329_GoWorker_ResidualSweepReport_Pass3_FailFastLineageGap(t *testing
 			JobId:    "job-mpl329-03",
 		},
 		OriginalRequest: &pb.ExecuteTaskRequest{
-			Payload: payload,
+			Payload: createMPL329TestPayload(),
 		},
 	}
 
