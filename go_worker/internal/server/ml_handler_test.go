@@ -51,8 +51,6 @@ func TestHandleCppMLRequest_Success(t *testing.T) {
 		store:       &mockStorageForMl{},
 	}
 
-	req := &pb.ExecuteTaskRequest{}
-	
 	payload := &pb.ExecuteTaskPayload{
 		Storage: &pb.StorageContract{
 			DocumentUri: "s3://original",
@@ -112,7 +110,6 @@ func TestHandleCppMLRequest_WithResidualReport_Success(t *testing.T) {
 		store:       &mockStorageForMl{},
 	}
 
-	req := &pb.ExecuteTaskRequest{}
 	payload := &pb.ExecuteTaskPayload{
 		Storage: &pb.StorageContract{
 			DocumentUri: "s3://original",
@@ -189,8 +186,6 @@ func TestHandleDotnetMLRequest_Success(t *testing.T) {
 		store:          &mockStorageForMl{},
 	}
 
-	req := &pb.ExecuteTaskRequest{}
-	
 	payload := &pb.ExecuteTaskPayload{
 		Storage: &pb.StorageContract{
 			DocumentUri: "s3://original",
