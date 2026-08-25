@@ -503,7 +503,7 @@ namespace {
                     gpu_mem_limit_str = v;
                 }
 
-                std::string arena_extend_strategy_str = "kNextPowerOfTwo";
+                std::string arena_extend_strategy_str = "kSameAsRequested";
                 if (const char* v = std::getenv("ORT_CUDA_ARENA_EXTEND_STRATEGY")) {
                     arena_extend_strategy_str = v;
                 }
