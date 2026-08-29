@@ -114,13 +114,39 @@ func (s *NatsServer) HandleMessageWithRecovery(ctx context.Context, msg jetstrea
 		if r := recover(); r != nil {
 			var t, a, j = "unknown", "unknown", "unknown"
 			var req pb.ExecuteTaskRequest
+			var identity *pb.InfrastructureIdentity
 			if err := proto.Unmarshal(msg.Data(), &req); err == nil && req.Identity != nil {
 				t = req.Identity.TenantId
 				a = req.Identity.AppId
 				j = req.Identity.JobId
+				identity = req.Identity
+			} else {
+				identity = &pb.InfrastructureIdentity{TenantId: t, AppId: a, JobId: j}
 			}
 			logger.Error("DocProcessor", "Panic recovered in NATS consumer goroutine for TenantID: %s, AppID: %s, JobID: %s. Error: %v", t, a, j, r)
-			msg.NakWithDelay(5 * time.Second)
+
+			var attempt uint64 = 1
+			if meta, err := msg.Metadata(); err == nil && meta != nil {
+				attempt = meta.NumDelivered
+			}
+
+			maxRetries := uint64(envutil.MustGetInt("NATS_MAX_RETRIES"))
+			if attempt >= maxRetries {
+				var replySubj string
+				if headers := msg.Headers(); headers != nil {
+					replySubj = headers.Get("Reply-Subject")
+				}
+				s.sendErrorReply(ctx, replySubj, ErrorCode, fmt.Sprintf("Panic: %v (exceeded max retries)", r), identity)
+				err := msg.Term()
+				if err != nil {
+					return
+				}
+			} else {
+				err := msg.NakWithDelay(time.Duration(envutil.MustGetInt("NATS_NACK_MULTIPLIER")) * time.Second)
+				if err != nil {
+					return
+				}
+			}
 		}
 	}()
 	s.processMessage(ctx, msg)
@@ -194,7 +220,7 @@ func buildDocsStructResult(docs []*pb.ProcessedDocument) (*structpb.Struct, erro
 		}
 		docList[i] = docMap
 	}
-	
+
 	resultMap := map[string]any{
 		"documents": docList,
 	}
@@ -421,7 +447,7 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 		}
 
 		logger.Info("DocProcessor", "Document is simple (PageCount: %d, IsScanned: %v). Forwarding to AI Inference (JobID: %s)", pageCount, isScanned, identity.GetJobId())
-		
+
 		req.TaskSubject = "worker.ai.inference"
 		forwardData, marshalErr := proto.Marshal(&req)
 		if marshalErr != nil {
@@ -434,18 +460,18 @@ func (s *NatsServer) processMessage(ctx context.Context, msg jetstream.Msg) {
 			headers = nats.Header{}
 		}
 		headers.Set("Reply-Subject", replySubj)
-		
+
 		pubMsg := &nats.Msg{
 			Subject: req.TaskSubject,
 			Header:  headers,
 			Data:    forwardData,
 		}
-		
+
 		if _, pubErr := s.js.PublishMsg(ctx, pubMsg); pubErr != nil {
 			processErr = fmt.Errorf("failed to forward to AI Inference: %w", pubErr)
 			break
 		}
-		
+
 		// Successfully forwarded, ack and exit since the AI worker will reply to the orchestrator.
 		s.ackMessage(msg, startTime, identity, attempt)
 		return
