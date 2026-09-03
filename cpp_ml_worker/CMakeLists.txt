@@ -276,7 +276,7 @@ include(GoogleTest)
 
 add_executable(cpp_ml_worker_test tests/test_main.cpp tests/test_span_generator.cpp tests/test_spatial_layout_analyzer.cpp)
 target_include_directories(cpp_ml_worker_test PRIVATE src)
-target_link_libraries(cpp_ml_worker_test PRIVATE worker_lib GTest::gtest_main)
+target_link_libraries(cpp_ml_worker_test PRIVATE worker_lib GTest::gtest GTest::gtest_main)
 set_target_properties(cpp_ml_worker_test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/../../bin_tests"
 )

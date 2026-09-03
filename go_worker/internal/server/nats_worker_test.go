@@ -167,6 +167,8 @@ func TestBuildDocsStructResult_PropagatesIsScanned(t *testing.T) {
 }
 
 func TestHandleMessageWithRecovery_Panic_NakWithDelay(t *testing.T) {
+	t.Setenv("NATS_MAX_RETRIES", "3")
+	t.Setenv("NATS_NACK_MULTIPLIER", "5")
 	server := &NatsServer{}
 	msg := &mockMsgForTerm{
 		subject: "worker.doc.test",
