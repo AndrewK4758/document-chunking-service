@@ -32,13 +32,11 @@ func TestChallenger_NatsStructUnmarshaling_PreservesIsScanned(t *testing.T) {
 		t.Fatalf("buildDocsStructResult returned nil")
 	}
 
-	// 1. Verify protojson marshaling of structResult
 	jsonBytes, err := protojson.Marshal(structResult)
 	if err != nil {
 		t.Fatalf("protojson.Marshal(structResult) error: %v", err)
 	}
 
-	// 2. Unmarshal into generic map to check JSON payload structure
 	var rawMap map[string]any
 	err = json.Unmarshal(jsonBytes, &rawMap)
 	if err != nil {
@@ -63,11 +61,9 @@ func TestChallenger_NatsStructUnmarshaling_PreservesIsScanned(t *testing.T) {
 	if !ok {
 		t.Fatalf("Expected doc 1 to be a map")
 	}
-	_ = doc1 // doc1 exists in map (for is_scanned=false, field may be omitted or false)
+	_ = doc1
 
-	// Note: for false, json.Marshal on pb struct with `omitempty` omits false fields,
-	// or in structpb.Struct protojson, false bools are omitted or false.
-	// Check if unmarshaled into pb.ProcessedDocument struct:
+	// False booleans may be omitted by omitempty during JSON serialization, so verify round-trip unmarshaling into ProcessedDocument.
 	var reconstructedDocs struct {
 		Documents []*pb.ProcessedDocument `json:"documents"`
 	}

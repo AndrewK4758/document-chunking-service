@@ -126,10 +126,8 @@ func TestLogicalBoundaryFSM_Arbitrate3Tiers(t *testing.T) {
 func TestLogicalBoundaryFSM_FailFastOnNonContiguousSequence(t *testing.T) {
 	fsm := NewLogicalBoundaryFSM()
 
-	// Feed page 1
 	fsm.EvaluatePage(&pb.PageEvaluation{PageNumber: 1, IsFirstPage: true})
 
-	// Feeding page 3 directly must panic
 	assert.Panics(t, func() {
 		fsm.EvaluatePage(&pb.PageEvaluation{PageNumber: 3})
 	})

@@ -125,7 +125,7 @@ namespace doc_processor {
     };
 }
 
-// Factory functions that can fail-fast if files are missing
+// Factory functions that throw if model or tokenizer files are missing
 std::unique_ptr<ITokenizer> CreateRealTokenizer(const std::string& tokenizer_json_path);
 std::unique_ptr<IOnnxRunner> CreateRealOnnxRunner(const std::string& model_path);
 

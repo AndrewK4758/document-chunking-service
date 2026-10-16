@@ -41,7 +41,6 @@ public:
         }
         PooledContext& operator=(PooledContext&& other) noexcept {
             if (this != &other) {
-                // Return current context if any
                 if (ctx_ && pool_) {
                     pool_->Checkin(ctx_);
                 }
@@ -73,7 +72,7 @@ public:
     FzContextPool(const FzContextPool&) = delete;
     FzContextPool& operator=(const FzContextPool&) = delete;
 
-    // Fail-fast: throws std::runtime_error if exhausted.
+    // Throws std::runtime_error if all contexts are currently checked out.
     PooledContext Checkout();
 
     Stats GetStats() const;

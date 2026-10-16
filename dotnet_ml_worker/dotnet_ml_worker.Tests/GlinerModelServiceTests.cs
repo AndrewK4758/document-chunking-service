@@ -15,38 +15,29 @@ public class GlinerModelServiceTests
     [Fact]
     public void Constructor_ModelFilesExist_ShouldInitializeSuccessfully()
     {
-        // Arrange
-        // Act
         var service = new GlinerModelService(_validModelDir);
 
-        // Assert
         service.Should().NotBeNull();
     }
 
     [Fact]
     public void Constructor_ModelFilesMissing_ShouldThrowException()
     {
-        // Arrange
         var invalidDir = "/path/to/nowhere";
 
-        // Act
         Action act = () => new GlinerModelService(invalidDir);
 
-        // Assert
         act.Should().Throw<Exception>();
     }
 
     [Fact]
     public void Predict_MalformedModel_ShouldThrowException()
     {
-        // Arrange
         var service = new GlinerModelService(_validModelDir);
         var text = "John Doe lives in New York and his email is john.doe@example.com.";
 
-        // Act
         Action act = () => service.Predict(text);
 
-        // Assert
         act.Should().Throw<InvalidOperationException>()
            .WithMessage("*malformed logits*");
     }

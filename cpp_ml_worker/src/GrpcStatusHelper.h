@@ -6,17 +6,10 @@
 #include <grpcpp/support/status.h>
 #include <spdlog/spdlog.h>
 
-// GrpcStatusHelper — reusable typed exception → grpc::Status translation
-// covering every Service:: override in cpp_ml_worker (AC-4). Header-only so
-// tests can call GrpcStatusFromException directly without a live server.
-// Dual-sink diagnostics: spdlog::error to stderr + best-effort Traceability
-// NATS publish (no-op until NATS client injected, swallow-on-failure per AC-3).
+// Translates C++ exceptions into grpc::Status responses and emits diagnostic logs.
 
 namespace doc_processor {
 
-// ---------------------------------------------------------------------------
-// Traceparent extraction (AC-3)
-// ---------------------------------------------------------------------------
 inline std::string ExtractTraceparent(grpc::ServerContext* context) {
     if (!context) return "";
     auto meta = context->client_metadata();
@@ -27,37 +20,23 @@ inline std::string ExtractTraceparent(grpc::ServerContext* context) {
     return "";
 }
 
-// ---------------------------------------------------------------------------
-// Detail formatting — embeds [JOB: job_id] when present (AC-1, AC-3)
-// ---------------------------------------------------------------------------
 inline std::string FormatDetail(const std::string& job_id, const std::string& what) {
     if (job_id.empty()) return what;
     return "[JOB: " + job_id + "] " + what;
 }
 
-// ---------------------------------------------------------------------------
-// JobId extraction helper — safe when request or identity absent (AC-3)
-// ---------------------------------------------------------------------------
 template <typename Request>
 inline std::string ExtractJobId(const Request* request) {
     if (!request) return "";
-    // Duck-typed: RedactDocumentRequest has has_identity() + identity().job_id()
-    // Use SFINAE-free runtime check via has_identity() where available.
-    // For generic Request that lacks has_identity, this will fail to compile
-    // — caller should pass job_id directly instead.
+    // Assumes Request provides protobuf has_identity() and identity().job_id().
     if (!request->has_identity()) return "";
     return request->identity().job_id();
 }
 
-// String overload for already-extracted job_id (used by catch blocks where
-// request may be null — caller does request && request->has_identity() check).
 inline std::string ExtractJobIdFromRequest(const std::string& job_id) {
     return job_id;
 }
 
-// ---------------------------------------------------------------------------
-// Traceability NATS stub — best-effort, never throws (AC-3)
-// ---------------------------------------------------------------------------
 inline void PublishTraceabilityError(
     const std::string& job_id,
     const std::string& tenant_id,
@@ -66,11 +45,8 @@ inline void PublishTraceabilityError(
     const std::string& method,
     grpc::StatusCode code,
     const std::string& what) {
-    // No NATS client wired in cpp_ml_worker yet — structure is the contract.
-    // When a NATS publisher is injected, replace body with:
-    //   try { nats_client->Publish("traceability.error", payload); }
-    //   catch (...) { spdlog::warn("Traceability NATS publish failed for job {}", job_id); }
-    // Swallow is intentional — NATS failure must not change returned Status.
+    // Stubbed until a NATS client is wired into cpp_ml_worker.
+    // Publishing errors must not alter the returned gRPC status.
     try {
         (void)job_id;
         (void)tenant_id;
@@ -79,7 +55,6 @@ inline void PublishTraceabilityError(
         (void)method;
         (void)code;
         (void)what;
-        // no-op until TraceabilityPublisher injected — one-line injection point
     } catch (...) {
         try {
             spdlog::warn("Traceability NATS publish failed for job {}", job_id.empty() ? "unknown" : job_id);
@@ -87,9 +62,6 @@ inline void PublishTraceabilityError(
     }
 }
 
-// ---------------------------------------------------------------------------
-// EmitDiagnostics — dual sink, never throws (AC-3)
-// ---------------------------------------------------------------------------
 inline void EmitDiagnostics(
     const std::string& job_id,
     const std::string& traceparent,
@@ -98,8 +70,6 @@ inline void EmitDiagnostics(
     const std::string& what,
     const std::string& tenant_id = "",
     const std::string& app_id = "") {
-    // Sink (a) stderr via spdlog — exactly one line per failure, with
-    // job_id, method, StatusCode, traceparent, what()
     try {
         const char* code_name = (code == grpc::StatusCode::INVALID_ARGUMENT) ? "INVALID_ARGUMENT" : "INTERNAL";
         spdlog::error("[JOB: {}] gRPC {} failed code={} traceparent={} what={}",
@@ -109,7 +79,6 @@ inline void EmitDiagnostics(
             traceparent.empty() ? "-" : traceparent,
             what);
     } catch (...) {}
-    // Sink (b) Traceability NATS — best-effort
     try {
         PublishTraceabilityError(job_id, tenant_id, app_id, traceparent, method, code, what);
     } catch (...) {
@@ -119,10 +88,6 @@ inline void EmitDiagnostics(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Typed GrpcStatusFromException overloads — each embeds job_id and emits
-// diagnostics, returns non-OK Status without throwing (AC-1, AC-2)
-// ---------------------------------------------------------------------------
 inline grpc::Status GrpcStatusFromException(
     const std::invalid_argument& ex,
     const std::string& job_id,
@@ -170,9 +135,7 @@ inline grpc::Status GrpcStatusFromUnknown(
     return grpc::Status(grpc::StatusCode::INTERNAL, detail);
 }
 
-// Dispatch from current_exception — allowed to rethrow internally because
-// it is immediately caught inside the same function (never reaches RPC frame).
-// Useful for generic catch-all sites that want a single call.
+// Translates the active exception in a catch block into a grpc::Status.
 inline grpc::Status GrpcStatusFromCurrentException(
     const std::string& job_id,
     const std::string& traceparent,
@@ -192,9 +155,6 @@ inline grpc::Status GrpcStatusFromCurrentException(
     }
 }
 
-// ---------------------------------------------------------------------------
-// WrapGrpc — templated envelope covering every Service:: override (AC-4)
-// ---------------------------------------------------------------------------
 template <typename Request, typename Func>
 inline grpc::Status WrapGrpc(
     grpc::ServerContext* context,

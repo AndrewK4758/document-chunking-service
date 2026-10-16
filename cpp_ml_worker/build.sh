@@ -18,10 +18,8 @@ echo "=========================================="
 echo " Building C++26 ML Worker (${BUILD_TYPE}) — Hardware-Native"
 echo "=========================================="
 
-# ---------- Host detection ----------
 echo "[detect] Host: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || echo unknown)  kernel $(uname -r)  $(uname -m)"
 
-# CPU
 CPU_MODEL="$(lscpu 2>/dev/null | grep 'Model name' | sed 's/.*: *//' | xargs || echo unknown)"
 CPU_ARCH="$(gcc -march=native -Q --help=target 2>/dev/null | grep -m1 'march=' | awk '{print $2}' || true)"
 if [[ -z "${CPU_ARCH:-}" ]]; then CPU_ARCH="native"; fi
@@ -37,13 +35,12 @@ grep -q avx2 <<< "$CPU_FLAGS_RAW" && HAS_AVX2=1
 echo "[detect] Features: AVX2=$HAS_AVX2 AVX512=$HAS_AVX512 BF16=$HAS_BF16 VNNI=$HAS_VNNI VNNI512=$HAS_VNNI512"
 echo "[detect] Flags sample: $(echo $CPU_FLAGS_RAW | cut -d' ' -f1-12) ..."
 
-# Memory / jobs
+# Cap parallel build jobs on low-memory hosts
 MEM_GB=$(free -g 2>/dev/null | awk '/Mem:/ {print $2}' || echo 16)
 JOBS=$(nproc 2>/dev/null || echo 4)
 if [[ "$MEM_GB" -lt 8 && "$JOBS" -gt 8 ]]; then JOBS=8; echo "[detect] Low RAM (${MEM_GB}G), capping jobs to $JOBS"; fi
 echo "[detect] Jobs: $JOBS (RAM ${MEM_GB}G)"
 
-# GPU — NVIDIA
 CUDA_AVAILABLE=0; GPU_NAME=""; COMPUTE_CAP=""; SM_NUM=""; SM_ARCH=""; CUDA_VER=""; CUDNN_VER=""
 if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
   GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 | xargs || true)"
@@ -61,17 +58,14 @@ else
   echo "[detect] GPU: none (CPU-only)"
 fi
 
-# GPU — ROCm
 if command -v rocm-smi &>/dev/null && rocm-smi &>/dev/null 2>&1; then
   echo "[detect] ROCm: detected ($(rocm-smi --showproductname 2>&1 | head -n1 | xargs || echo present))"
 fi
 if [[ -e /opt/rocm/bin/rocminfo ]]; then echo "[detect] ROCm: /opt/rocm present"; fi
 
-# Arch / OS packager
 if command -v pacman &>/dev/null; then PM="pacman (Arch)"; elif command -v apt &>/dev/null; then PM="apt (Debian/Ubuntu)"; elif command -v dnf &>/dev/null; then PM="dnf (Fedora)"; else PM="unknown"; fi
 echo "[detect] Packager: $PM  compiler: $(gcc --version 2>&1 | head -n1)  cmake $(cmake --version 2>&1 | head -n1)"
 
-# ---------- Dynamic flags ----------
 NATIVE_CXXFLAGS="-march=native -mtune=native"
 NATIVE_CFLAGS="$NATIVE_CXXFLAGS"
 if [[ "$BUILD_TYPE" == "Release" ]]; then
@@ -91,16 +85,13 @@ CMAKE_ARGS=(
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 )
 
-# CUDA arch: only set if we have a GPU, let onnxruntime PKGBUILD handle its own _valid_sm() but
-# pass it to our worker if it ever needs CUDA kernels
 if [[ "$CUDA_AVAILABLE" == "1" && -n "$SM_NUM" ]]; then
-  # CMake 3.22+ wants numeric arch like 120; keep both for compatibility
+  # CMake 3.22+ expects numeric architecture values (e.g. 120).
   CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="$SM_NUM")
   echo "[flags] CMAKE_CUDA_ARCHITECTURES=$SM_NUM"
 fi
 
-# ---------- Optional: rebuild onnxruntime for this host ----------
-# Catches the Arch cudnn 9 skew (v7 symbol) and ensures SM_NATIVE
+# Optionally rebuild onnxruntime-cuda from source to match local cuDNN and SM arch.
 if [[ "${REBUILD_ORT:-0}" == "1" && "$CUDA_AVAILABLE" == "1" ]]; then
   echo ""
   echo "=========================================="
@@ -132,19 +123,17 @@ if [[ "${REBUILD_ORT:-0}" == "1" && "$CUDA_AVAILABLE" == "1" ]]; then
   fi
   cd "$SCRIPT_DIR"
 elif [[ "$CUDA_AVAILABLE" == "1" ]]; then
-  # Auto-detect stale onnxruntime without forcing rebuild
+  # Warn if the system onnxruntime-cuda binary was linked against an older cuDNN ABI.
   if nm -D /usr/lib/libonnxruntime_providers_cuda.so 2>/dev/null | grep -q cudnnGetConvolutionBackwardDataAlgorithm_v7; then
     echo "[warn] onnxruntime-cuda still references cudnn v7 (stale vs $CUDNN_VER) — run REBUILD_ORT=1 ./build.sh to rebuild native"
   fi
 fi
 
-# ---------- Configure & build cpp_ml_worker ----------
 echo ""
 echo "=========================================="
 echo " Configuring cpp_ml_worker ($BUILD_TYPE, native LTO)"
 echo "=========================================="
 mkdir -p "$BUILD_DIR"
-# Pass native flags via CMake (NATIVE_OPTIMIZE adds -march=native) plus Release flags
 cmake -B "$BUILD_DIR" -S "$SCRIPT_DIR" "${CMAKE_ARGS[@]}" \
   -DCMAKE_CXX_FLAGS_RELEASE="$NATIVE_CXXFLAGS" \
   -DCMAKE_C_FLAGS_RELEASE="$NATIVE_CFLAGS" \

@@ -146,7 +146,6 @@ func (fsm *LogicalBoundaryFSM) EvaluatePage(page *pb.PageEvaluation) *pb.Logical
 			Reason:       decision.Reason,
 		}
 	} else {
-		// CONTINUE_CURRENT
 		if fsm.ActiveSlice == nil {
 			fsm.ActiveSlice = &SubDocumentSlice{
 				StartPage:    int(page.PageNumber),

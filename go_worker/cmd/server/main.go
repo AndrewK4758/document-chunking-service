@@ -40,22 +40,17 @@ func main() {
 	)
 	logger.InitLogger()
 
-	// MPL-320: taxonomy startup health check (fail-fast in dev)
+	// Verify taxonomy file availability at startup without introducing a package import cycle
 	{
 		_ = func() string {
-			// Ensure taxonomy loads at startup; panic in dev if missing per AC-4
-			// Use processor TaxonomyPath + MustLoadTaxonomy
-			// Import via blank to avoid cycle: direct load via os.ReadFile
 			return ""
 		}()
 	}
-	// Direct startup check without import cycle: use env path
 	{
 		taxPath := "document_processing_service/config/label_taxonomy.json"
 		if p := envutil.GetStringOrDefault("TAXONOMY_PATH", ""); p != "" {
 			taxPath = p
 		}
-		// Also try PROJECT_ROOT relative
 		if _, err := os.Stat(taxPath); err != nil {
 			if pr := envutil.GetStringOrDefault("PROJECT_ROOT", ""); pr != "" {
 				alt := pr + "/" + taxPath
@@ -64,7 +59,6 @@ func main() {
 				}
 			}
 		}
-		// Fail-fast check via processor IsFailFast semantics (replicate)
 		isFailFast := false
 		if v := envutil.GetStringOrDefault("FAIL_FAST", ""); v != "" {
 			low := strings.ToLower(strings.TrimSpace(v))
@@ -80,9 +74,8 @@ func main() {
 		logger.Info("DocProcessor", "Taxonomy startup check passed for %s (failFast=%v)", taxPath, isFailFast)
 	}
 
-	// Initialize Database and run migrations
 	dbInstance := db.InitDB()
-	_ = dbInstance // Will pass to server or storage when needed
+	_ = dbInstance
 
 	port := envutil.MustGetString("GRPC_PORT")
 
@@ -99,7 +92,6 @@ func main() {
 		),
 	)
 
-	// Dial AI Service
 	aiServiceUrl := envutil.MustGetString("AI_SERVICE_URL")
 
 	aiConn, err := grpc.NewClient(aiServiceUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -110,28 +102,6 @@ func main() {
 
 	aiClient := pb.NewDocumentProcessorClient(aiConn)
 
-	// ... (Wait, main.go already imports context, net, etc. I need to add 'os' if it's missing)
-	// Query available models on startup asynchronously
-	//go func() {
-	//	tenant := envutil.GetStringOrDefault("TENANT_ID", "system")
-	//	app := envutil.GetStringOrDefault("APP_ID", "doc_processor_startup")
-	//	job := envutil.GetStringOrDefault("JOB_ID", "startup")
-	//
-	//	modelsResp, err := aiClient.GetAvailableModels(context.Background(), &pb.GetAvailableModelsRequest{
-	//		Identity: &pb.InfrastructureIdentity{
-	//			TenantId: tenant,
-	//			AppId:    app,
-	//			JobId:    job,
-	//		},
-	//	})
-	//	if err != nil {
-	//		logger.Info("DocProcessor", "Warning: failed to query AI service for available models: %v", err)
-	//	} else {
-	//		logger.Info("DocProcessor", "AI Service Models Loaded - Text: %v, OCR: %v", modelsResp.TextModels, modelsResp.OcrModels)
-	//	}
-	//}()
-
-	// Initialize Storage Gateway Client
 	gatewayAddr := envutil.MustGetString("STORAGE_GATEWAY_ADDR")
 
 	gatewayConn, err := grpc.NewClient(gatewayAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -182,7 +152,6 @@ func main() {
 
 	dotnetMlClient := pb.NewMlWorkerServiceClient(dotnetMlConn)
 
-	// Initialize NATS
 	natsURL := envutil.MustGetString("NATS_URL")
 	if natsURL == "" {
 		natsURL = "nats://localhost:4222"
@@ -208,7 +177,6 @@ func main() {
 		}
 	}()
 
-	// Register the DocumentProcessingService
 	docServer := server.NewDocumentProcessingServer(aiClient, cppMlClient, dotnetMlClient, store)
 	pb.RegisterDocumentProcessingServiceServer(s, docServer)
 

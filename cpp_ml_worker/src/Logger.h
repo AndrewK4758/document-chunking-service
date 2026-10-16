@@ -53,12 +53,10 @@ inline void InitEnv() {
 inline void InitLogger(const std::string& service_name = "cpp_ml_worker") {
     std::vector<spdlog::sink_ptr> sinks;
 
-    // 1. Console Sink (stdout with ANSI TrueColor level styling)
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     console_sink->set_level(spdlog::level::info);
     sinks.push_back(console_sink);
 
-    // 2. File Sink (writes directly to target logs/ directory)
     std::string log_file_path = "/home/ak/projects/mployee/logs/cpp_ml_worker.log";
     if (const char* env_path = std::getenv("LOG_FILE_PATH")) {
         if (std::string(env_path).length() > 0) {
@@ -75,12 +73,11 @@ inline void InitLogger(const std::string& service_name = "cpp_ml_worker") {
         }
     }
 
-    // 100 MB max file size, 3 backup files (aligned to Go worker and other services)
+    // 100 MB max file size, 3 rotated backups
     auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(log_file_path, 100 * 1024 * 1024, 3);
     file_sink->set_level(spdlog::level::info);
     sinks.push_back(file_sink);
 
-    // 3. Multi-sink Logger Configuration
     auto combined_logger = std::make_shared<spdlog::logger>(service_name, sinks.begin(), sinks.end());
     combined_logger->set_level(spdlog::level::info);
     combined_logger->flush_on(spdlog::level::info);

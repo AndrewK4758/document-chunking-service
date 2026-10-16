@@ -17,14 +17,13 @@ GeneratedSpans SpanGenerator::Generate(size_t num_words, size_t max_span_len) {
     GeneratedSpans result;
     result.span_idx_storage.resize(est_spans * 2);
     result.span_mask_storage.resize(est_spans);
-    result.num_spans = est_spans; // Temporary for mut view to work
+    result.num_spans = est_spans;
 
     auto span_idx_view = result.span_idx_mut();
     auto span_mask_view = result.span_mask_mut();
 
     size_t idx = 0;
-    
-    // Using C++26 ranges
+
     for (size_t start : std::views::iota(0uz, num_words)) {
         for (size_t end_offset : std::views::iota(0uz, max_span_len)) {
             size_t end = start + end_offset;

@@ -34,7 +34,6 @@ func Extract(archivePath, destinationDir string) ([]string, error) {
 			return nil, fmt.Errorf("sevenzip failed to extract: %w", err)
 		}
 	default:
-		// Not an archive (e.g. .pdf, .txt, .docx), just return the original file
 		isArchive = false
 	}
 
@@ -42,19 +41,17 @@ func Extract(archivePath, destinationDir string) ([]string, error) {
 		return []string{archivePath}, nil
 	}
 
-	// Walk destinationDir to find all extracted files
 	var extractedFiles []string
 	err := filepath.Walk(destinationDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return fmt.Errorf("failed to walk directory path %s: %w", path, err)
 		}
 		if !info.IsDir() {
-			// Skip the original archive file itself
 			if path == archivePath {
 				return nil
 			}
 
-			// Basic ZipSlip protection verification (archiver handles this mostly, but good to be sure)
+			// Guard against ZipSlip path traversal
 			if strings.Contains(path, "..") {
 				return fmt.Errorf("malicious path detected in extraction: %s", path)
 			}

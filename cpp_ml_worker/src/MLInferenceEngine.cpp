@@ -114,7 +114,7 @@ doc_processor::InferenceContext MLInferenceEngine::RunInferencePipeline(
 ) {
     float threshold = ResolveConfidenceThreshold(threshold_override);
 
-    // 1. Extract words and corresponding bounding boxes using punctuation-aware tokenization (\w+(?:[-_]\w+)*|\S)
+    // Extract words and corresponding bounding boxes using punctuation-aware tokenization (\w+(?:[-_]\w+)*|\S)
     std::vector<doc_processor::InferenceWordSpan> words;
     size_t n = text.size();
     size_t char_pos = 0;
@@ -171,7 +171,7 @@ doc_processor::InferenceContext MLInferenceEngine::RunInferencePipeline(
 
     std::map<doc_processor::CandidateKey, float> candidate_map;
 
-    // Hoist scratchpad string buffers with reserve(4096) per MPL-316 §5.4
+    // Preallocate scratch buffers outside the sliding window loop to avoid repeated allocations
     std::string label_scratch;
     label_scratch.reserve(4096);
     std::string word_scratch;
@@ -236,7 +236,6 @@ doc_processor::InferenceContext MLInferenceEngine::RunInferencePipeline(
         std::vector<int64_t> attention_mask(input_ids.size(), 1);
 
         auto spans = doc_processor::SpanGenerator::Generate(window_word_count, 12);
-        // mdspan validation for window tensors per MPL-312 §5.4
         {
             auto input_ids_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(input_ids.data(), 1, input_ids.size());
             auto words_mask_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(words_mask.data(), 1, words_mask.size());
@@ -260,7 +259,7 @@ doc_processor::InferenceContext MLInferenceEngine::RunInferencePipeline(
 
         if (!logits.empty()) {
             size_t num_classes = dynamic_labels.size();
-            // mdspan tensor views per MPL-312 §5.5 — layout_right row-major, zero extra copy
+            // Zero-copy row-major view over output logits
             auto logits_md = std::mdspan<const float, std::extents<size_t, std::dynamic_extent, std::dynamic_extent>>(
                 logits.data(), spans.num_spans, num_classes);
             auto span_idx_md = spans.span_idx();
@@ -557,7 +556,6 @@ namespace {
             const doc_processor::GeneratedSpans& spans
         ) override {
             if (input_ids.empty() || num_words == 0 || num_classes == 0 || spans.num_spans == 0) return {};
-            // mdspan extent validation per MPL-312 §5.4 — layout_right, zero extra copy
             {
                 auto input_ids_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(input_ids.data(), 1, input_ids.size());
                 auto words_mask_md = std::mdspan<const int64_t, std::extents<size_t,1,std::dynamic_extent>>(words_mask.data(), 1, words_mask.size());

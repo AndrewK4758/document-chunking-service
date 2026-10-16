@@ -352,9 +352,7 @@ TEST(WorkerTests, MuPDFWrapper_ApplyNormalizedRedactions_RotatedPageTextErasure)
     EXPECT_EQ(after_text.find("RotatedSecret"), std::string::npos);
 }
 
-// ---------------------------------------------------------------------------
-// MPL-311: Rotation-Aware Spatial Normalization & Y-Axis Inversion Tests
-// ---------------------------------------------------------------------------
+// Rotation-aware spatial normalization & Y-axis inversion tests
 
 namespace {
     std::string MakeSyntheticCanaryPdf(
@@ -466,7 +464,6 @@ TEST(MPL311Tests, AC1_YAxisInversion_TopHalfVisualBoxErasesTopTextOnly) {
     MuPDFWrapper redacted_wrapper(redacted_bytes);
     auto [after_text, __] = redacted_wrapper.ExtractPageText(0);
 
-    // AC-1: TOP_SECRET (visual top) MUST be erased; BOTTOM_PUBLIC MUST be preserved
     EXPECT_EQ(after_text.find("TOP_SECRET"), std::string::npos);
     EXPECT_NE(after_text.find("BOTTOM_PUBLIC"), std::string::npos);
 }
@@ -489,7 +486,6 @@ TEST(MPL311Tests, AC1_YAxisInversion_BottomHalfVisualBoxErasesBottomTextOnly) {
     MuPDFWrapper redacted_wrapper(redacted_bytes);
     auto [after_text, _] = redacted_wrapper.ExtractPageText(0);
 
-    // AC-1: BOTTOM_PUBLIC (visual bottom) MUST be erased; TOP_SECRET MUST be preserved
     EXPECT_NE(after_text.find("TOP_SECRET"), std::string::npos);
     EXPECT_EQ(after_text.find("BOTTOM_PUBLIC"), std::string::npos);
 }
@@ -1341,11 +1337,9 @@ TEST(MPL313Tests, PerformanceSLO_HotLoopBufferFillAndTensorCreationUnder02ms) {
     for (int iter = 0; iter < kIterations; ++iter) {
         auto start = std::chrono::steady_clock::now();
 
-        // 1. Buffer copy
         text_lengths_buf[0] = 384;
         std::fill(words_mask_buf.begin(), words_mask_buf.begin() + 384, 1);
 
-        // 2. Zero-alloc Ort::Value views
         auto token_val = Ort::Value::CreateTensor<int64_t>(pinned_info, input_ids_buf.data(), kSeqLen, seq_shape, 2);
         auto attn_val = Ort::Value::CreateTensor<int64_t>(pinned_info, attention_mask_buf.data(), kSeqLen, seq_shape, 2);
         auto words_val = Ort::Value::CreateTensor<int64_t>(pinned_info, words_mask_buf.data(), kSeqLen, seq_shape, 2);
@@ -1361,7 +1355,6 @@ TEST(MPL313Tests, PerformanceSLO_HotLoopBufferFillAndTensorCreationUnder02ms) {
 
     std::sort(latencies_us.begin(), latencies_us.end());
     double p95_us = latencies_us[static_cast<size_t>(kIterations * 0.95)];
-    // 0.2ms = 200us
     EXPECT_LT(p95_us, 200.0) << "p95 latency was " << p95_us << " us, expected < 200 us";
 }
 
@@ -1408,9 +1401,7 @@ TEST(MPL313Tests, GeometricBoxRegression_UnionAndClampPreservesGeometry) {
     EXPECT_FLOAT_EQ(spans[0].y1(), 20.0f / 100.0f);
 }
 
-// ============================================================================
-// MPL-316 Test Suite: FFI UTF-8 Boundary Sanitization & Scratchpad Hoisting
-// ============================================================================
+// FFI UTF-8 boundary sanitization & scratchpad hoisting tests
 
 namespace {
     class RecordingTokenizer : public ITokenizer {
@@ -1929,9 +1920,7 @@ TEST(MPL317Tests, HelperExistsAndIsImportable) {
     SUCCEED();
 }
 
-// ============================================================================
-// MPL-327: Autonomous Multi-Pass Canonical Template Distillation Unit Tests
-// ============================================================================
+// Multi-pass canonical template distillation unit tests
 
 TEST(MPL327Tests, AC1_SpatialWipeZones_TableRowsRedactedWhileHeadersPreserved) {
     ml::worker::v1::RedactDocumentRequest request;
@@ -1944,7 +1933,6 @@ TEST(MPL327Tests, AC1_SpatialWipeZones_TableRowsRedactedWhileHeadersPreserved) {
     request.add_dynamic_labels("dollar amount");
     request.add_dynamic_labels("fee title");
 
-    // Add spatial wipe zone for dense table rows
     auto* zone = request.add_spatial_wipe_zones();
     zone->set_page_number(1);
     zone->set_x0(50.0f);
@@ -1961,7 +1949,6 @@ TEST(MPL327Tests, AC1_SpatialWipeZones_TableRowsRedactedWhileHeadersPreserved) {
 }
 
 TEST(MPL327Tests, AC2_DynamicLabelManifest_ConfidenceThresholdOverride) {
-    // When override is > 0.0f, it takes precedence
     float threshold = MLInferenceEngine::ResolveConfidenceThreshold(0.38f);
     EXPECT_FLOAT_EQ(threshold, 0.38f);
 
@@ -1979,7 +1966,6 @@ TEST(MPL327Tests, AC3_ResidualSweep_ConvergenceReport) {
     EXPECT_EQ(report.residual_value_count(), 0);
     EXPECT_EQ(report.pass_count(), 1);
 
-    // Test secondary pass with residuals
     ml::worker::v1::ResidualSweepReport delta_report;
     delta_report.set_is_converged(false);
     delta_report.set_residual_value_count(2);
@@ -2007,9 +1993,7 @@ TEST(MPL327Tests, AC4_UnboundedIterationFailFast) {
     EXPECT_THROW(validate_convergence_loop(4, false), std::runtime_error);
 }
 
-// ============================================================================
-// MPL-329: Adaptive In-Worker Redaction Self-Healing & Residual Convergence Loop
-// ============================================================================
+// Adaptive in-worker redaction self-healing & residual convergence loop tests
 
 namespace {
     std::string MakeSyntheticCanaryPdfWithMetadata(
@@ -2054,8 +2038,7 @@ TEST(MPL329Tests, AC1_InWorkerSelfHealing_EliminatesSurvivingGlyphsOnTightBounda
     wrapper.ApplyRedactions(0, {tight_box});
     std::string redacted_bytes = wrapper.GetRedactedPdf();
 
-    // VerifyPostRedaction with full_box as verification target:
-    // Surviving glyphs trigger in-worker adaptive self-healing with 2.0pt dilation
+    // Surviving glyphs within full_box trigger adaptive secondary wipe with 2.0pt dilation
     std::map<int, std::vector<fz_rect>> per_page_boxes;
     per_page_boxes[0] = {full_box};
 
@@ -2063,7 +2046,6 @@ TEST(MPL329Tests, AC1_InWorkerSelfHealing_EliminatesSurvivingGlyphsOnTightBounda
     EXPECT_TRUE(report.is_converged);
     EXPECT_EQ(report.residual_value_count, 0);
 
-    // Verify reloaded document has zero occurrences
     MuPDFWrapper reloaded(redacted_bytes);
     auto [after_text, _] = reloaded.ExtractPageText(0);
     EXPECT_EQ(after_text.find("KERNING_SECRET"), std::string::npos);
@@ -2107,7 +2089,6 @@ TEST(MPL329Tests, AC4_IterationBudgetGuard_Pass3ThrowsLineageGap) {
     std::string unredacted_pdf = wrapper.GetRedactedPdf();
     std::map<int, std::vector<fz_rect>> per_page_boxes;
 
-    // Pass 1 & 2 do NOT throw
     EXPECT_NO_THROW({
         auto r1 = wrapper.VerifyPostRedaction(unredacted_pdf, per_page_boxes, {"ADVERSARIAL_LEAK"}, "job-budget-01", "trace-04", 1);
         EXPECT_FALSE(r1.is_converged);
@@ -2118,7 +2099,6 @@ TEST(MPL329Tests, AC4_IterationBudgetGuard_Pass3ThrowsLineageGap) {
         EXPECT_FALSE(r2.is_converged);
     });
 
-    // Pass 3 halts immediately with [SEAM: LINEAGE_GAP]
     try {
         wrapper.VerifyPostRedaction(unredacted_pdf, per_page_boxes, {"ADVERSARIAL_LEAK"}, "job-budget-01", "trace-04", 3);
         FAIL() << "Expected std::runtime_error with [SEAM: LINEAGE_GAP]";
@@ -2129,9 +2109,7 @@ TEST(MPL329Tests, AC4_IterationBudgetGuard_Pass3ThrowsLineageGap) {
     }
 }
 
-// ============================================================================
-// MPL-328: MuPDF Form XObject Recursive Redaction & Exact-Coordinate Precision Engine
-// ============================================================================
+// Form XObject recursive redaction & exact-coordinate precision tests
 
 namespace {
     std::string MakeSyntheticFormXObjectPdf(
@@ -2455,10 +2433,8 @@ TEST(LoggerTests, InitLogger_CreatesFileAndWritesLogs) {
     const std::string canary_msg = "CANARY_LOG_VERIFICATION_MESSAGE_98765";
     spdlog::info(canary_msg);
 
-    // Verify file was created
     ASSERT_TRUE(std::filesystem::exists(test_log_file));
 
-    // Read contents and verify message is present
     std::ifstream file(test_log_file);
     ASSERT_TRUE(file.is_open());
     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -2467,7 +2443,6 @@ TEST(LoggerTests, InitLogger_CreatesFileAndWritesLogs) {
     EXPECT_NE(content.find(canary_msg), std::string::npos);
     EXPECT_NE(content.find("[info]"), std::string::npos);
 
-    // Cleanup testing directory
     std::filesystem::remove_all(test_log_dir);
     unsetenv("LOG_FILE_PATH");
 }

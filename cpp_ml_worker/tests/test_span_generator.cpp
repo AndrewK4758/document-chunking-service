@@ -14,11 +14,9 @@ TEST(SpanGeneratorTest, TestStandardSequence) {
     EXPECT_EQ(spans.span_mask_storage.size(), 240);
     
     auto span_idx = spans.span_idx();
-    // Check first span
     EXPECT_EQ((span_idx[0, 0]), 0);
     EXPECT_EQ((span_idx[0, 1]), 0);
     
-    // Check second span
     EXPECT_EQ((span_idx[1, 0]), 0);
     EXPECT_EQ((span_idx[1, 1]), 1);
 }

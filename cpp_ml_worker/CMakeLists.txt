@@ -1,13 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
 project(cpp_ml_worker)
 
-# --- C++26 baseline (MPL-312 §5.8) ---
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/out)
 
-# --- Hardware-native optimization for Zen 5 (9955HX3D) and Blackwell (RTX 5070 Ti / SM120) ---
+# Hardware-native optimization for Zen 5 and Blackwell (SM120)
 option(NATIVE_OPTIMIZE "Build for current host CPU/GPU (znver5, SM120, AVX-512)" ON)
 set(CMAKE_CUDA_ARCHITECTURES 120)
 
@@ -33,8 +32,7 @@ if(POLICY CMP0175)
   cmake_policy(SET CMP0175 NEW)
 endif()
 
-# --- Latest system deps first (Arch rolling: protobuf 35.1, absl 20260817, gRPC 1.83) ---
-# Order matters: protobuf-config.cmake does find_package(absl) + utf8_range
+# Order matters: protobuf-config.cmake calls find_package(absl) and utf8_range.
 find_package(Threads REQUIRED)
 find_package(absl CONFIG REQUIRED)
 find_package(utf8_range CONFIG REQUIRED)
@@ -48,13 +46,12 @@ find_library(CUDNN_LIBRARY NAMES cudnn PATHS /usr/lib /usr/lib/x86_64-linux-gnu 
 
 include(FetchContent)
 
-# --- onnxruntime: prefer system, fallback to latest fetch ---
-# System on Arch: /usr/lib/cmake/onnxruntime (1.28.x), header /usr/include/onnxruntime
+# Prefer system onnxruntime, falling back to the prebuilt GPU release.
 find_package(onnxruntime CONFIG QUIET)
 if(TARGET onnxruntime::onnxruntime)
   message(STATUS "Using system onnxruntime: ${onnxruntime_VERSION}")
   set(ORT_TARGET onnxruntime::onnxruntime)
-  # system lib has no bundled GPU path; rely on default RPATH
+  # System lib has no bundled GPU path; rely on default RPATH
   set(ORT_RPATH "")
 else()
   message(STATUS "System onnxruntime not found - fetching latest GPU build (v1.23.x)")
@@ -64,12 +61,10 @@ else()
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(onnxruntime)
-  # Fallback to asdf GPU build if present (your previous 1.29), else use fetched
   if(EXISTS "/home/ak/.asdf/installs/python/3.14.7/lib/python3.14/site-packages/onnxruntime/capi/libonnxruntime.so.1.29.0")
     set(ORT_GPU_LIB "/home/ak/.asdf/installs/python/3.14.7/lib/python3.14/site-packages/onnxruntime/capi/libonnxruntime.so.1.29.0")
     set(ORT_GPU_DIR "/home/ak/.asdf/installs/python/3.14.7/lib/python3.14/site-packages/onnxruntime/capi")
   else()
-    # Use fetched onnxruntime include/lib
     set(ORT_GPU_LIB "")
     set(ORT_GPU_DIR "")
   endif()
@@ -82,10 +77,8 @@ else()
     set(ORT_TARGET onnxruntime_imported)
     set(ORT_RPATH "${ORT_GPU_DIR}:/opt/cuda/lib64")
   else()
-    # Generic imported from FetchContent (header-only fallback)
     if(NOT TARGET onnxruntime_imported AND DEFINED onnxruntime_SOURCE_DIR)
       add_library(onnxruntime_imported SHARED IMPORTED GLOBAL)
-      # Try to locate the .so inside fetched tree
       file(GLOB _ort_so "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so*")
       if(_ort_so)
         list(GET _ort_so 0 _ort_so_first)
@@ -94,7 +87,7 @@ else()
           INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include"
         )
       else()
-        # No binary - use header only, rely on system .so
+        # No bundled binary; expose headers only and rely on the system library.
         add_library(onnxruntime_imported INTERFACE IMPORTED GLOBAL)
         set_target_properties(onnxruntime_imported PROPERTIES
           INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include"
@@ -111,10 +104,8 @@ else()
   endif()
 endif()
 
-# --- tokenizers-cpp: force system absl/protobuf (latest) ---
-# sentencepiece defaults to internal/module which bundles abseil 20260107 and
-# protobuf - that ABI-mismatches system protobuf 35.1 / absl 20260817 (lts_20260526 vs 2608).
-# We must set these CACHE vars BEFORE adding tokenizers_cpp.
+# Force sentencepiece (bundled in tokenizers-cpp) to link against system absl and protobuf
+# rather than its internal copies, preventing ABI mismatches.
 set(SPM_ABSL_PROVIDER "package" CACHE STRING "Use system absl" FORCE)
 set(SPM_PROTOBUF_PROVIDER "package" CACHE STRING "Use system protobuf" FORCE)
 set(SPM_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
@@ -127,7 +118,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tokenizers_cpp)
 
-# --- simdutf: prefer system, else fetch latest ---
 find_package(simdutf CONFIG QUIET)
 if(NOT TARGET simdutf::simdutf)
   message(STATUS "System simdutf not found - fetching v7.x latest")
@@ -147,7 +137,6 @@ if(NOT TARGET simdutf::simdutf)
   message(FATAL_ERROR "simdutf required for UTF-8 FFI boundary; install libsimdutf-dev or allow FetchContent")
 endif()
 
-# --- mupdf: system ---
 find_library(MUPDF_LIB mupdf REQUIRED)
 find_library(MUPDFCPP_LIB mupdfcpp QUIET)
 find_path(MUPDF_INCLUDE mupdf/fitz.h PATHS /usr/include REQUIRED)
@@ -162,7 +151,6 @@ if(NOT TARGET mupdf)
   endif()
 endif()
 
-# --- Probe <mdspan> (MPL-312 §5.8 - no polyfill) ---
 include(CheckIncludeFileCXX)
 check_include_file_cxx("mdspan" HAVE_MDSPAN)
 if(NOT HAVE_MDSPAN)

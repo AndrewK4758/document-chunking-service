@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <spdlog/spdlog.h>
 
-// PooledContext destructor returns context to pool
 FzContextPool::PooledContext::~PooledContext() {
     if (ctx_ && pool_) {
         pool_->Checkin(ctx_);
@@ -18,7 +17,6 @@ FzContextPool::FzContextPool(size_t capacity) : capacity_(capacity) {
     for (size_t i = 0; i < capacity_; ++i) {
         fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
         if (!ctx) {
-            // Clean up already created contexts
             for (auto* c : free_) {
                 fz_drop_context(c);
             }
@@ -33,13 +31,9 @@ FzContextPool::FzContextPool(size_t capacity) : capacity_(capacity) {
 
 FzContextPool::~FzContextPool() {
     std::lock_guard<std::mutex> lk(mu_);
-    // Warn if leaks outstanding
+    // PooledContext holds a shared_ptr to the pool, so in_use_debug_ should normally be empty here.
     if (!in_use_debug_.empty()) {
         spdlog::warn("FzContextPool destroyed with {} contexts still checked out", in_use_debug_.size());
-        // Force drop remaining contexts (they will be reclaimed via Checkin path if PooledContext still alive)
-        // But if those PooledContexts outlive pool, their Checkin will be no-op due to weak pool?
-        // Since PooledContext holds shared_ptr, pool won't be destroyed until all leases released.
-        // So this branch should normally be empty.
     }
     for (auto* ctx : free_) {
         // Scavenge store before drop to bound memory
@@ -85,8 +79,6 @@ FzContextPool::PooledContext FzContextPool::Checkout() {
     } catch (const std::bad_weak_ptr&) {
         throw std::logic_error("FzContextPool::Checkout requires pool owned by std::shared_ptr (use std::make_shared)");
     }
-    // Unlock before constructing return value (already unlocked via lock_guard destructor sequencing)
-    // Use direct construction
     return {ctx, std::move(self)};
 }
 

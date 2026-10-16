@@ -34,7 +34,6 @@ public class RedactionPipeline : IRedactionPipeline
         var targets = targetTypes.ToHashSet();
         var redactions = new List<RedactionBox>();
 
-        // Step 1: Read with PdfPig and extract bounding boxes
         using (var pigDoc = UglyToad.PdfPig.PdfDocument.Open(inputPdfBytes))
         {
             for (int i = 1; i <= pigDoc.NumberOfPages; i++)
@@ -57,7 +56,6 @@ public class RedactionPipeline : IRedactionPipeline
             }
         }
 
-        // Step 2: Draw black rectangles using PdfSharpCore
         int redactedCount = redactions.Count;
         if (redactedCount == 0)
         {

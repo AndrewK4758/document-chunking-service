@@ -173,7 +173,7 @@ func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, iden
 		return "", err
 	}
 
-	// Parse relativePath which is formatted as "jobID/filename.pdf" by the processor
+	// Parse relativePath formatted as "jobID/filename.pdf"
 	parts := strings.SplitN(relativePath, "/", 2)
 	if len(parts) != 2 {
 		return "", fmt.Errorf("invalid save path format, expected jobID/filename, got: %s", relativePath)
@@ -186,7 +186,6 @@ func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, iden
 		return "", fmt.Errorf("failed to initiate upload stream: %w", err)
 	}
 
-	// Send metadata chunk first
 	err = stream.Send(&pb.UploadRequest{
 		UploadElement: &pb.UploadRequest_Metadata{
 			Metadata: &pb.UploadMetadata{
@@ -199,7 +198,6 @@ func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, iden
 		return "", fmt.Errorf("failed to send upload metadata for %s: %w", filename, err)
 	}
 
-	// Send data in chunks (64KB chunks)
 	chunkSize := 64 * 1024
 	for i := 0; i < len(data); i += chunkSize {
 		end := min(i+chunkSize, len(data))
@@ -214,7 +212,6 @@ func (g *GatewayStorage) SaveFile(ctx context.Context, relativePath string, iden
 		}
 	}
 
-	// Close stream and receive the storage URI
 	resp, err := stream.CloseAndRecv()
 	if err != nil {
 		return "", fmt.Errorf("failed to close upload stream for %s: %w", filename, err)

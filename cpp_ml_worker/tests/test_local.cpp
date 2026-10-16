@@ -29,7 +29,6 @@ int main(int argc, char** argv) {
         spdlog::info("  - '{}'", l);
     }
 
-    // Read the PDF file into a string buffer
     std::ifstream file(pdf_path, std::ios::binary);
     if (!file.is_open()) {
         spdlog::error("Error: Could not open file {}", pdf_path);

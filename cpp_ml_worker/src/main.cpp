@@ -89,7 +89,6 @@ namespace {
                     
                     for (const auto& zone : request->spatial_wipe_zones()) {
                         if (zone.page_number() == i + 1 || zone.page_number() == i) {
-                            // [SEAM: IMPOSSIBLE_STATE] Validate wipe zone coordinates per MPL-327 Chaos-03
                             if (zone.x0() < 0 || zone.y0() < 0 || zone.x1() < 0 || zone.y1() < 0) {
                                 spdlog::error("[JOB: {}] SpatialWipeZone negative coordinate on page {}: [{},{},{},{}]", job_id, zone.page_number(), zone.x0(), zone.y0(), zone.x1(), zone.y1());
                                 throw std::invalid_argument("SpatialWipeZone contains negative coordinate: [" + std::to_string(zone.x0()) + "," + std::to_string(zone.y0()) + "," + std::to_string(zone.x1()) + "," + std::to_string(zone.y1()) + "]");
@@ -140,7 +139,7 @@ namespace {
                 auto report = mupdf.VerifyPostRedaction(redacted_pdf_data, per_page_boxes, target_plaintexts, job_id, traceparent, current_pass);
 
                 spdlog::info("[JOB: {}] 5. Uploading redacted document to Storage Gateway...", job_id);
-                // MPL-327 generic: use basename for storage key to avoid "redacted_internal-store://..." path traversal
+                // Extract basename for the storage key so URI schemes ("internal-store://...") don't cause path traversal
                 const std::string& _uri = request->document_uri();
                 size_t _pos = _uri.find_last_of("/\\");
                 std::string _base = (_pos==std::string::npos? _uri : _uri.substr(_pos+1));

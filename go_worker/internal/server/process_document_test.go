@@ -15,7 +15,6 @@ import (
 func TestProcessDocument_Success(t *testing.T) {
 	tempDir := t.TempDir()
 	store := &mockStorage{basePath: tempDir}
-	// Create a dummy file in storage
 	os.MkdirAll(filepath.Join(tempDir, "path/to"), 0755)
 	os.WriteFile(filepath.Join(tempDir, "path/to/doc.pdf"), []byte("dummy pdf content"), 0644)
 
@@ -38,7 +37,6 @@ func TestProcessDocument_Success(t *testing.T) {
 
 	srv := NewDocumentProcessingServer(nil, cppClient, netClient, store)
 
-	// Set env var to log somewhere we can check
 	logDir := t.TempDir()
 	os.Setenv("PROJECT_ROOT", logDir)
 	defer os.Unsetenv("PROJECT_ROOT")
@@ -66,10 +64,8 @@ func TestProcessDocument_Success(t *testing.T) {
 		t.Error("Expected net client to be called")
 	}
 
-	// Wait briefly for goroutines to finish (though waitgroup already waits)
 	time.Sleep(50 * time.Millisecond)
-	
-	// Check benchmark.log
+
 	logFile := filepath.Join(logDir, "logs", "benchmark.log")
 	content, err := os.ReadFile(logFile)
 	if err != nil {

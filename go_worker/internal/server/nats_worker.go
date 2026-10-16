@@ -72,7 +72,7 @@ func (s *NatsServer) Start(ctx context.Context) error {
 		cons, err = s.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 			Durable:        consumerName,
 			AckPolicy:      jetstream.AckExplicitPolicy,
-			FilterSubjects: []string{"worker.doc.>"}, // Or from env if necessary, assuming only durable and stream are hard violations mentioned
+			FilterSubjects: []string{"worker.doc.>"},
 			MaxAckPending:  envutil.MustGetInt("MAX_ACK_PENDING"),
 			AckWait:        envutil.MustGetDuration("WORKER_ACK_WAIT"),
 			BackOff: []time.Duration{
@@ -556,10 +556,8 @@ func (s *NatsServer) startMLMetric(identity *pb.InfrastructureIdentity, stepName
 func (s *NatsServer) handleCppMLRequest(ctx context.Context, payload *pb.ExecuteTaskPayload, identity *pb.InfrastructureIdentity) (res *structpb.Struct, err error) {
 	defer s.startMLMetric(identity, "RedactPii")(&err)
 
-	// Boundary: gRPC call to cpp_ml_worker — MPL-320 taxonomy expansion
-	// We dispatch a synchronous gRPC call passing the RedactDocumentRequest using the Document URI.
-	// This ensures we block the NATS consumer so that the message isn't ACKed until the worker finishes,
-	// keeping data safe. The ack window extender handles the NATS message timeouts.
+	// Block the NATS consumer on a synchronous gRPC call so the message isn't ACKed until redaction finishes;
+	// the ack window extender keeps the NATS delivery alive in the meantime.
 	canonicals := []string{"loan_amount", "interest_rate", "file_number", "closing_date"}
 	tax, hash, _ := processor.LoadTaxonomy(processor.TaxonomyPath())
 	exp := processor.NewExpander(tax, hash)
@@ -591,7 +589,6 @@ func (s *NatsServer) handleCppMLRequest(ctx context.Context, payload *pb.Execute
 	if !resp.GetSuccess() {
 		panic(fmt.Errorf("action failed for job DocProcessorWorker: ML RedactDocument returned false: %s", resp.GetErrorMessage()))
 	}
-	// Post-normalize spans: label→canonical + value canonicalization
 	for _, span := range resp.GetExtractedSpans() {
 		canonical, _, _ := processor.NormalizeSpanLabel(span.GetLabel(), reverse, exp)
 		if _, nerr := processor.NormalizeValue(span.GetText(), canonical); nerr != nil && processor.IsFailFast() {
@@ -646,7 +643,7 @@ func (s *NatsServer) handleDotnetMLRequest(ctx context.Context, payload *pb.Exec
 
 	mlReq := &pb.PiiRedactionRequest{
 		Identity:       identity,
-		TargetPiiTypes: []pb.PiiType{pb.PiiType_PII_TYPE_PERSON_NAME, pb.PiiType_PII_TYPE_SSN, pb.PiiType_PII_TYPE_PHONE_NUMBER, pb.PiiType_PII_TYPE_EMAIL, pb.PiiType_PII_TYPE_ADDRESS}, // Defaulting to some standard types as this comes from custom instructions usually
+		TargetPiiTypes: []pb.PiiType{pb.PiiType_PII_TYPE_PERSON_NAME, pb.PiiType_PII_TYPE_SSN, pb.PiiType_PII_TYPE_PHONE_NUMBER, pb.PiiType_PII_TYPE_EMAIL, pb.PiiType_PII_TYPE_ADDRESS},
 		RawFileBytes:   rawBytes,
 	}
 

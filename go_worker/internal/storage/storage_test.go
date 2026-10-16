@@ -20,8 +20,6 @@ func init() {
 	os.Setenv("STORAGE_FETCH_RETRY_SLEEP_MS", "1")
 }
 
-// --- MOCK DEFINITIONS ---
-
 type mockStorageGatewayClient struct {
 	uploadStream   *mockUploadStream
 	downloadStream *mockDownloadStream
@@ -47,7 +45,6 @@ func (m *mockStorageGatewayClient) ClearJobData(ctx context.Context, in *pb.Clea
 	return &pb.ClearJobDataResponse{Success: true}, nil
 }
 
-// mockUploadStream
 type mockUploadStream struct {
 	grpc.ClientStream
 	sendErr      error
@@ -68,7 +65,6 @@ func (m *mockUploadStream) CloseAndRecv() (*pb.UploadResponse, error) {
 	return m.closeResp, m.closeErr
 }
 
-// mockDownloadStream
 type mockDownloadStream struct {
 	grpc.ClientStream
 	responses []*pb.DownloadResponse
@@ -79,8 +75,6 @@ type mockDownloadStream struct {
 func (m *mockDownloadStream) Recv() (*pb.DownloadResponse, error) {
 	return testutil.RecvMockDownloadChunks(&m.idx, m.responses, m.errs)
 }
-
-// --- TESTS ---
 
 func TestGatewayStorage_FetchFile_Success(t *testing.T) {
 	mockClient := &mockStorageGatewayClient{
@@ -146,7 +140,7 @@ func TestGatewayStorage_FetchFile_StreamError(t *testing.T) {
 		downloadStream: &mockDownloadStream{
 			responses: []*pb.DownloadResponse{
 				{ChunkData: []byte("hello ")},
-				nil, // Second fetch will return error
+				nil,
 			},
 			errs: []error{nil, fmt.Errorf("network partition")},
 		},
@@ -183,7 +177,7 @@ func TestGatewayStorage_SaveFile_Rejected(t *testing.T) {
 func TestGatewayStorage_ContextCancellation(t *testing.T) {
 	store := NewGatewayStorage(&mockStorageGatewayClient{})
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
+	cancel()
 
 	_, err := store.FetchFile(ctx, "internal-store://test", nil)
 	if !errors.Is(err, context.Canceled) {
@@ -200,8 +194,6 @@ func TestGatewayStorage_ContextCancellation(t *testing.T) {
 func TestGatewayStorage_ForwardMetadata(t *testing.T) {
 	testutil.AssertForwardMetadata(t, forwardMetadata, "tenant_id", "test_tenant")
 }
-
-// --- MULTI-ATTEMPT RETRY TESTS ---
 
 type mockMultiAttemptGatewayClient struct {
 	pb.StorageGatewayServiceClient

@@ -264,7 +264,6 @@ namespace {
         };
 
         while (i < n) {
-            // 1. Skip comments
             if (input[i] == '%') {
                 size_t start = i;
                 while (i < n && input[i] != '\r' && input[i] != '\n') {
@@ -274,7 +273,7 @@ namespace {
                 continue;
             }
 
-            // 2. Skip literal strings (...) handling parentheses balance and escapes
+            // Skip literal strings (...) while tracking nested parentheses and escapes
             if (input[i] == '(') {
                 size_t start = i;
                 int depth = 1;
@@ -296,7 +295,7 @@ namespace {
                 continue;
             }
 
-            // 3. Skip hex strings <...>
+            // Skip hex strings <...>, ignoring dictionary delimiters <<
             if (input[i] == '<' && (i + 1 >= n || input[i + 1] != '<')) {
                 size_t start = i;
                 i++;
@@ -308,7 +307,7 @@ namespace {
                 continue;
             }
 
-            // 4. Check for Name token starting with '/'
+            // Inline matching "/Name Do" Form XObject invocations wrapped in q/Q graphics state
             if (input[i] == '/') {
                 size_t name_start = i + 1;
                 size_t j = name_start;
@@ -319,14 +318,12 @@ namespace {
 
                 auto it = form_inlines.find(name);
                 if (it != form_inlines.end()) {
-                    // Check if following token is "Do"
                     size_t k = j;
                     while (k < n && (input[k] == ' ' || input[k] == '\t' || input[k] == '\r' || input[k] == '\n')) {
                         k++;
                     }
                     if (k + 2 <= n && input[k] == 'D' && input[k + 1] == 'o' &&
                         (k + 2 == n || is_delim(input[k + 2]))) {
-                        // Match found: "/Name ... Do"
                         output.append("\nq\n");
                         output.append(it->second);
                         output.append("\nQ\n");
@@ -336,7 +333,6 @@ namespace {
                 }
             }
 
-            // Default: copy current character
             output.push_back(input[i]);
             i++;
         }
@@ -777,14 +773,13 @@ PostRedactionReport MuPDFWrapper::VerifyPostRedaction(
     ensure_valid();
     fz_context* c = ctx();
 
-    // Pass 1: Scan pages for surviving glyphs; apply in-memory adaptive self-healing if detected
+    // Scan pages for surviving glyphs and apply a dilated secondary wipe if any remain
     for (const auto& [page_idx, boxes] : per_page_boxes) {
         if (boxes.empty()) continue;
         auto info = CollectIntersectingGlyphs(redacted_pdf_bytes, boxes, page_idx);
         if (info.count > 0) {
             spdlog::warn("[HEAL: RETRY] job_id={} page_index={} surviving_glyphs={} — applying adaptive secondary wipe with 2.0pt dilation",
                          job_id, page_idx, info.count);
-            // In-memory adaptive self-healing pass on active document
             fz_try(c) {
                 FzPagePtr page(nullptr, FzPageDeleter{c});
                 page.reset(fz_load_page(c, doc_.get(), page_idx));
@@ -812,7 +807,6 @@ PostRedactionReport MuPDFWrapper::VerifyPostRedaction(
             } fz_catch(c) {
                 spdlog::error("Self-healing secondary wipe error on page {}: {}", page_idx, fz_caught_message(c));
             }
-            // Re-serialize active document buffer
             redacted_pdf_bytes = GetRedactedPdf();
         }
     }

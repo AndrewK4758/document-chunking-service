@@ -6,10 +6,7 @@ echo "Downloading GLINER PII model (ONNX) and tokenizer to /home/ak/projects/ml.
 mkdir -p /home/ak/projects/ml
 cd /home/ak/projects/ml
 
-# Download the ONNX model
 curl -L -o model.onnx "https://huggingface.co/onnx-community/gliner_multi_pii-v1/resolve/main/onnx/model.onnx"
-
-# Download the tokenizer
 curl -L -o tokenizer.json "https://huggingface.co/onnx-community/gliner_multi_pii-v1/resolve/main/tokenizer.json"
 
 echo "Download complete! model.onnx and tokenizer.json are now in /home/ak/projects/ml."

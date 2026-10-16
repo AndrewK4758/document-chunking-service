@@ -14,13 +14,11 @@ import (
 
 // Expander performs O(1) taxonomy expansion with deduplication and reverse mapping.
 type Expander struct {
-	tax  Taxonomy
-	hash string
-	mu   sync.Mutex
-	// collision tracking for metrics
+	tax        Taxonomy
+	hash       string
+	mu         sync.Mutex
 	collisions map[string]int
-	// histograms (simple counters)
-	muMetrics sync.Mutex
+	muMetrics  sync.Mutex
 }
 
 // NewExpander creates an Expander from loaded taxonomy.
@@ -46,9 +44,7 @@ func (e *Expander) Taxonomy() Taxonomy { return e.tax }
 func normalizeCanonical(in string) string {
 	s := strings.TrimSpace(in)
 	s = strings.ToLower(s)
-	// Trim trailing punctuation like :, ., #
 	s = strings.Trim(s, " :.#\t\n\r")
-	// Normalize spaces/hyphens to underscore
 	s = strings.ReplaceAll(s, " ", "_")
 	s = strings.ReplaceAll(s, "-", "_")
 	for strings.Contains(s, "__") {
@@ -68,7 +64,6 @@ func (e *Expander) lookupSynonyms(canonical string) ([]string, bool) {
 			return syns, true
 		}
 	}
-	// Also try lowercased version
 	low := strings.ToLower(strings.TrimSpace(canonical))
 	if low != canonical && low != norm {
 		if syns, ok := e.tax[low]; ok {
@@ -101,21 +96,17 @@ func (e *Expander) AllCollisions() map[string]int {
 	return cp
 }
 
-// Expand expands canonicals into deduplicated union with reverse map.
-// Returns budget errors with SEAM_VIOLATION semantics; empty canonicals handled per fail-fast.
+// Expand expands canonical keys into a deduplicated synonym union and builds a reverse lookup map.
 func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, error) {
 	if e == nil {
 		return nil, nil, fmt.Errorf("IMPOSSIBLE_STATE taxonomy.not_loaded: expander not initialized")
 	}
 	if e.hash == "" && len(e.tax) == 0 {
-		// Empty taxonomy is allowed (identity expansion), but hash missing is flagged
-		// Only critical if called pre-inference with non-empty canonicals and hash empty due to load failure.
-		// We still proceed with identity expansion; observability will note hash.
+		// Empty taxonomy falls back to identity expansion.
 	}
 
 	canonicalCount := len(canonicals)
 
-	// Fail-fast guard: empty input
 	trimmedNonEmpty := 0
 	for _, c := range canonicals {
 		if strings.TrimSpace(c) != "" {
@@ -126,7 +117,6 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 		if IsFailFast() {
 			return nil, nil, fmt.Errorf("InvalidArgument: expanded_labels empty (canonical_count=%d)", canonicalCount)
 		}
-		// Non-fail-fast: return empty
 		return []string{}, map[string]string{}, nil
 	}
 
@@ -143,7 +133,7 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 		}
 		syns, ok := e.lookupSynonyms(canonical)
 
-		// Build candidate list: canonical first, then synonyms in file order
+		// Put the canonical key first, followed by synonyms in declaration order
 		candidates := make([]string, 0, 1+len(syns))
 		candidates = append(candidates, canonical)
 		if ok {
@@ -152,16 +142,14 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 		totalCandidates += len(candidates)
 
 		for _, cand := range candidates {
-			// Dedup preserving order
 			if !seen[cand] {
 				seen[cand] = true
 				expanded = append(expanded, cand)
 				totalBytes += len(cand)
 			}
-			// Reverse map with first-wins collision handling
+			// First canonical wins when multiple canonicals share a synonym
 			if existing, exists := reverse[cand]; exists {
 				if existing != canonical {
-					// Synonym collision: first canonical wins
 					e.recordCollision(cand)
 					slog.Warn("DECISION_DRIFT taxonomy.synonym_collision",
 						slog.String("synonym", cand),
@@ -182,7 +170,6 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 		return expanded, reverse, nil
 	}
 
-	// Budget enforcement
 	if len(expanded) > MaxExpandedLabels {
 		return nil, nil, fmt.Errorf("SEAM_VIOLATION taxonomy.budget_exceeded: budget exceeded: %d > %d", len(expanded), MaxExpandedLabels)
 	}
@@ -190,7 +177,6 @@ func (e *Expander) Expand(canonicals []string) ([]string, map[string]string, err
 		return nil, nil, fmt.Errorf("SEAM_VIOLATION taxonomy.budget_exceeded: serialized bytes %d > 4MB", totalBytes)
 	}
 
-	// Observability: always emit counts+hash at INFO, full union at DEBUG
 	e.emitExpansionLog(canonicalCount, totalCandidates, len(expanded), totalBytes, expanded)
 
 	return expanded, reverse, nil
@@ -204,20 +190,15 @@ func (e *Expander) emitExpansionLog(canonicalCount, expandedCount, dedupedCount,
 		slog.String("taxonomy_hash", e.hash),
 		slog.Int("total_bytes", totalBytes),
 	}
-	// Use default logger via slog
 	msg := "taxonomy_expansion"
-	// Structured INFO always
 	slog.LogAttrs(context.Background(), slog.LevelInfo, msg,
 		append(attrs, slog.String("event", "taxonomy_expansion"))...,
 	)
-	// Also via shared logger if initialized (best effort)
-	// Fallback to slog Debug for full union
 	if IsDebugMode() {
 		slog.LogAttrs(context.Background(), slog.LevelDebug, "taxonomy_expansion_full_union",
 			slog.Any("expanded", expanded),
 			slog.String("taxonomy_hash", e.hash),
 		)
-		// Also env stdout for test capture
 		if os.Getenv("LOG_LEVEL") == "debug" {
 			fmt.Fprintf(os.Stderr, "DEBUG taxonomy_expansion_full_union expanded=%v hash=%s\n", expanded, e.hash)
 		}
@@ -231,7 +212,6 @@ func (e *Expander) NormalizeLabel(label string, reverse map[string]string) (stri
 		coll := e.CollisionCount(label) > 0
 		return canonical, label, coll
 	}
-	// Miss: return label as canonical (identity)
 	return label, label, false
 }
 
@@ -254,7 +234,6 @@ func (e *Expander) NormalizeSpans(spans []SpanLike, reverse map[string]string) (
 		canonical, matched, _ := e.NormalizeLabel(s.Label, reverse)
 		normVal, err := NormalizeValue(s.Text, canonical)
 		if err != nil && IsFailFast() {
-			// In dev, propagate error via empty normalized; caller will handle fail-fast
 			normVal = s.Text
 		} else if err != nil {
 			normVal = s.Text
@@ -303,25 +282,21 @@ func NormalizeSpanLabel(spanLabel string, reverse map[string]string, expander *E
 
 // PropagateTraceContext injects W3C trace headers into outgoing gRPC context.
 // It extracts traceparent / trace_id / span_id from incoming metadata or context values
-// and appends them to outgoing gRPC metadata, adding taxonomy_hash as span attribute.
-// This satisfies OS-5.2: Go → C++ trace propagation via gRPC metadata.
+// and appends them to outgoing gRPC metadata.
 func PropagateTraceContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		return ctx
 	}
-	// Try to extract traceparent from incoming metadata
 	var traceparent string
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if vals := md.Get("traceparent"); len(vals) > 0 {
 			traceparent = vals[0]
 		} else if vals := md.Get("trace_id"); len(vals) > 0 {
-			// Fallback: raw trace_id
 			traceparent = vals[0]
 		} else if vals := md.Get("x-trace-id"); len(vals) > 0 {
 			traceparent = vals[0]
 		}
 	}
-	// Also check context values (used in tests / non-gRPC callers)
 	if traceparent == "" {
 		if v := ctx.Value("traceparent"); v != nil {
 			if s, ok := v.(string); ok {
@@ -338,12 +313,9 @@ func PropagateTraceContext(ctx context.Context) context.Context {
 	}
 	if traceparent != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "traceparent", traceparent)
-		// Also ensure downstream can read trace_id
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
 			_ = md
 		}
 	}
 	return ctx
 }
-
-// PropagateTraceWithHash is convenience that also attaches taxonomy_hash as span attribute.

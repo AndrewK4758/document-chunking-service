@@ -48,7 +48,7 @@ func InitDB() *gorm.DB {
 			}
 		}
 		if migrationsDir == "" {
-			migrationsDir = "db/migrations" // ultimate fallback
+			migrationsDir = "db/migrations"
 		}
 	}
 		migrationsDirAbs, err := filepath.Abs(migrationsDir)
@@ -72,7 +72,6 @@ func InitDB() *gorm.DB {
 
 	logger.Info("DB", "Successfully ran database migrations.")
 
-	// Connect GORM
 	gormDB, err := gorm.Open(gormpostgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		panic(fmt.Errorf("failed to connect to gorm: %w", err))

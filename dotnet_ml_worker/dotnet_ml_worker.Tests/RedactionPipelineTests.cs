@@ -15,7 +15,6 @@ public class RedactionPipelineTests
     [Fact]
     public void Redact_GivenPdfWithPii_ShouldReturnRedactedPdf()
     {
-        // Arrange
         byte[] pdfBytes = CreateDummyPdf("Hello John Doe and others.");
         var mockService = new Moq.Mock<IModelService>();
         mockService.Setup(s => s.Predict(It.IsAny<string>()))
@@ -23,8 +22,6 @@ public class RedactionPipelineTests
         var pipeline = new RedactionPipeline(mockService.Object);
         var targetTypes = new[] { PiiType.PersonName };
 
-        // Act
-        // Debug output
         using (var pigDoc = UglyToad.PdfPig.PdfDocument.Open(pdfBytes))
         {
             var words = string.Join(", ", pigDoc.GetPages().SelectMany(p => p.GetWords()).Select(w => w.Text));
@@ -33,20 +30,14 @@ public class RedactionPipelineTests
 
         var (redactedBytes, count) = pipeline.Redact(pdfBytes, targetTypes);
 
-        // Assert
         Assert.NotNull(redactedBytes);
         Assert.True(redactedBytes.Length > 0);
-        // Expecting 2 redactions: "John" and "Doe"
         Assert.Equal(2, count);
-        
-        // We can optionally verify the new PDF doesn't easily show "John Doe",
-        // but PDF text extraction can be tricky. Bounding box count is our primary check.
     }
 
     [Fact]
     public void Redact_NoPiiMatch_ShouldReturnOriginalPdf()
     {
-        // Arrange
         byte[] pdfBytes = CreateDummyPdf("Hello Alice Bob and others.");
         var mockService = new Moq.Mock<IModelService>();
         mockService.Setup(s => s.Predict(It.IsAny<string>()))
@@ -54,10 +45,8 @@ public class RedactionPipelineTests
         var pipeline = new RedactionPipeline(mockService.Object);
         var targetTypes = new[] { PiiType.PersonName };
 
-        // Act
         var (redactedBytes, count) = pipeline.Redact(pdfBytes, targetTypes);
 
-        // Assert
         Assert.Equal(0, count);
     }
 

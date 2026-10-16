@@ -31,7 +31,6 @@ var (
 
 func getPdfCpuConfig() *model.Configuration {
 	pdfCpuConfigOnce.Do(func() {
-		// Initialization if necessary
 	})
 	return model.NewDefaultConfiguration()
 }
@@ -77,10 +76,6 @@ func (p *ChunkingProcessor) executeAiAction(ctx context.Context, origReq *pb.Exe
 		return nil, err
 	}
 
-	// Assuming PerformActionRequest takes Context as *pb.ExecuteTaskRequest in the new pb?
-	// Actually, wait, PerformActionRequest might have also been updated, but since I'm just replacing ExecuteWorkflowNodeRequest.
-	// Let's pass origReq as Context.
-	// If PerformActionRequest still wants ExecuteWorkflowNodeRequest, we'll see a compilation error.
 	err = stream.Send(&pb.PerformActionRequest{
 		Context:       origReq,
 		CurrentAction: actionDef,
@@ -236,9 +231,7 @@ func (p *ChunkingProcessor) InspectDocument(ctx context.Context, req *pb.Execute
 	}
 	defer os.Remove(tmpFile.Name())
 
-	// Read only up to 5MB to avoid full memory load or massive disk I/O if possible
-	// However, pdftotext requires a valid PDF which means EOF and xref are at the end.
-	// We have to stream the whole file to disk. But we do this dynamically without keeping it in RAM.
+	// PDF parsing requires the trailing xref table and EOF marker, so stream the full file to disk rather than buffering in memory.
 	_, err = io.Copy(tmpFile, stream)
 	if err != nil {
 		tmpFile.Close()
@@ -453,7 +446,6 @@ func (p *ChunkingProcessor) processLargeDoc(ctx context.Context, req *pb.ChunkDo
 			continue
 		}
 
-		// Valid boundary split!
 		chunkDoc, chunkErr := p.extractAndUploadChunk(ctx, req, pdfPath, currentDocStart, absoluteBoundary-1, chunkIndex, extractDir, docUri, docTypeChunked, isScanned, addTrace)
 		if chunkErr != nil {
 			return nil, chunkErr
@@ -543,7 +535,7 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 	if err != nil {
 		return nil, traceEvents, fmt.Errorf("[Step: TEMP_WRITE, URI: %s] failed to write temp input file: %w", docUri, err)
 	}
-	// Immediately discard zipBytes from memory to enable Garbage Collection
+	// Release raw archive bytes early so GC can reclaim them during extraction
 	zipBytes = nil
 
 	extractedPaths, err := archive.Extract(tempInputPath, extractDir)
@@ -600,7 +592,6 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 			return processedDocs, traceEvents, err
 		}
 
-		// Probe text vs OCR
 		isScanned, detectErr := detectIsScannedPDF(pdfPath)
 		if detectErr != nil {
 			addTrace(fmt.Sprintf("Failed to detect PDF type for %s: %v", filepath.Base(pdfPath), detectErr), "ERROR")
@@ -618,9 +609,8 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 
 		if p.CppMlClient != nil {
 			addTrace(fmt.Sprintf("%s is being routed to CPP ML Worker autonomously for testing.", filepath.Base(pdfPath)), "INFO")
-			// MPL-320: dynamic label taxonomy expansion (O(1) dedup, budget, fail-fast)
 			canonicals := []string{"loan_amount", "interest_rate", "file_number", "closing_date"}
-			// Prefer payload-derived canonicals if available via expected schema (dynamic)
+			// Prefer dynamic labels from the expected schema when configured
 			if payload != nil && payload.NodeConfig != nil && payload.NodeConfig.ExpectedSchemaStruct != nil {
 				if vals := payload.NodeConfig.ExpectedSchemaStruct.GetFields(); vals != nil {
 					if f, ok := vals["dynamic_labels"]; ok && f != nil {
@@ -657,7 +647,6 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				DocumentUri:   docUri,
 				DynamicLabels: expanded,
 			}
-			// Propagate W3C trace + taxonomy hash
 			ctx = PropagateTraceContext(ctx)
 			if hash != "" {
 				ctx = context.WithValue(ctx, "taxonomy_hash", hash)
@@ -671,7 +660,6 @@ func (p *ChunkingProcessor) ProcessZipFile(ctx context.Context, req *pb.ChunkDoc
 				addTrace(fmt.Sprintf("CPP ML Worker failed: %s", resp.GetErrorMessage()), "ERROR")
 				return nil, traceEvents, fmt.Errorf("[Step: ML_WORKER, URI: %s] CPP ML Worker returned failure: %s", docUri, resp.GetErrorMessage())
 			}
-			// Post-normalize extracted spans: label→canonical + value canonicalization (money/date)
 			for _, span := range resp.GetExtractedSpans() {
 				canonical, matched, _ := NormalizeSpanLabel(span.GetLabel(), reverse, exp)
 				normVal, nerr := NormalizeValue(span.GetText(), canonical)

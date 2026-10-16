@@ -29,7 +29,6 @@ func main() {
 
 	fileName := filepath.Base(pdfPath)
 
-	// Connect to Storage Gateway
 	gatewayConn, err := grpc.NewClient("localhost:11118", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect to Storage Gateway (localhost:11118): %v", err)
@@ -38,7 +37,6 @@ func main() {
 
 	gatewayClient := pb.NewStorageGatewayServiceClient(gatewayConn)
 
-	// Mock Identity
 	identity := &pb.InfrastructureIdentity{
 		TenantId: "test-tenant",
 		AppId:    "test-ml-script",
@@ -51,7 +49,6 @@ func main() {
 		log.Fatalf("Failed to open upload stream: %v", err)
 	}
 
-	// Send metadata
 	err = uploadStream.Send(&pb.UploadRequest{
 		UploadElement: &pb.UploadRequest_Metadata{
 			Metadata: &pb.UploadMetadata{
@@ -64,7 +61,7 @@ func main() {
 		log.Fatalf("Failed to send metadata: %v", err)
 	}
 
-	// Send chunk (we send the whole thing as one chunk for this test script)
+	// Send the entire PDF in a single chunk for this test script
 	err = uploadStream.Send(&pb.UploadRequest{
 		UploadElement: &pb.UploadRequest_ChunkData{
 			ChunkData: pdfBytes,
@@ -86,7 +83,6 @@ func main() {
 	storageUri := uploadResp.StorageUri
 	fmt.Printf("Uploaded successfully! Storage URI: %s\n", storageUri)
 
-	// Connect to C++ ML Worker
 	cppConn, err := grpc.NewClient("127.0.0.1:50060", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect to C++ ML Worker (127.0.0.1:50060): %v", err)
@@ -110,7 +106,6 @@ func main() {
 
 	fmt.Println("ML Redaction completed successfully!")
 
-	// Reconstruct the redacted URI
 	redactedUri := "internal-store://" + identity.TenantId + "/" + identity.AppId + "/" + identity.JobId + "/redacted_" + fileName
 
 	fmt.Printf("Downloading redacted file from: %s\n", redactedUri)

@@ -98,15 +98,12 @@ func NormalizeValue(text, canonical string) (string, error) {
 
 func isMoneyCanonical(c string) bool {
 	if strings.HasSuffix(c, "_amount") || strings.HasSuffix(c, "_price") || strings.HasSuffix(c, "_rate") {
-		// interest_rate contains _rate but is percentage; treat as money-like for value collapse
-		// We still normalize money format if text contains $ or numeric; for percentage we'll just return cents-like?
-		// Distinguish: if canonical is interest_rate, allow percentage handling via money path (strip %)
+		// Treat _rate keys (e.g. interest_rate) as money-like after stripping trailing '%'
 		return true
 	}
 	if strings.Contains(c, "amount") || strings.Contains(c, "money") || strings.Contains(c, "price") || strings.Contains(c, "principal") || strings.Contains(c, "loan_amt") {
 		return true
 	}
-	// Explicit known money canonicals
 	if c == "loan_amount" || c == "interest_rate" || c == "principal" {
 		return true
 	}
@@ -127,29 +124,25 @@ func normalizeMoney(s string) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("empty money string")
 	}
-	// Remove $ and trim
 	cleaned := strings.ReplaceAll(s, "$", "")
 	cleaned = strings.ReplaceAll(cleaned, ",", "")
 	cleaned = strings.TrimSpace(cleaned)
-	// Handle percentage sign
 	cleaned = strings.TrimSuffix(cleaned, "%")
 	cleaned = strings.TrimSpace(cleaned)
-	// Handle "k" suffix like "125k"
+
 	lower := strings.ToLower(cleaned)
-	if before, ok :=strings.CutSuffix(lower, "k"); ok  {
+	if before, ok := strings.CutSuffix(lower, "k"); ok {
 		numPart := before
 		f, err := strconv.ParseFloat(strings.TrimSpace(numPart), 64)
 		if err != nil {
 			return "", err
 		}
-		cents := int64(math.Round(f * 1000 * 100)) // k = *1000 then *100
-		// Actually f*1000 dollars -> cents = f*1000*100
+		cents := int64(math.Round(f * 1000 * 100))
 		return fmt.Sprintf("%d", cents), nil
 	}
-	// Use regex to extract numeric portion
-	m := moneyRe.FindStringSubmatch("$" + cleaned) // prepend $ to ensure regex captures
+
+	m := moneyRe.FindStringSubmatch("$" + cleaned)
 	if m == nil {
-		// Try direct parse
 		f, err := strconv.ParseFloat(cleaned, 64)
 		if err != nil {
 			return "", fmt.Errorf("money parse failed for %q", s)
@@ -175,14 +168,10 @@ func normalizeDate(s string) (string, error) {
 		return "", fmt.Errorf("empty date string")
 	}
 	input := strings.TrimSpace(s)
-	// Try to parse with multiple layouts, handling both MDY and DMY
-	// Detect if ambiguous: both MDY and DMY parse and differ
 
-	// Normalize am/pm casing for time layouts
-	// We'll attempt case-insensitive am/pm by trying lower and upper
+	// Try both MDY and DMY layouts with case-insensitive AM/PM handling
 	candidates := []string{input, strings.ToLower(input), strings.ToUpper(input)}
 
-	// Layouts for MDY
 	mdyLayouts := []string{
 		"01/02/2006 3:04pm",
 		"01/02/2006 03:04pm",
@@ -196,7 +185,6 @@ func normalizeDate(s string) (string, error) {
 		"2006-01-02",
 		"2006/01/02",
 	}
-	// Layouts for DMY
 	dmyLayouts := []string{
 		"02/01/2006 3:04pm",
 		"02/01/2006 03:04pm",
@@ -231,18 +219,15 @@ func normalizeDate(s string) (string, error) {
 		}
 	}
 
-	// Handle ambiguous case: both parsed and dates differ
+	// Flag dates that parse under both MDY and DMY to different calendar days (e.g. 01/02/2025)
 	if mdyTime != nil && dmyTime != nil {
 		mdyISO := mdyTime.Format("2006-01-02")
 		dmyISO := dmyTime.Format("2006-01-02")
 		if mdyISO != dmyISO {
-			// Ambiguous like 01/02/2025
 			if IsFailFast() {
 				return "", fmt.Errorf("DECISION_DRIFT date_ambiguous: 01/02/2025 ambiguous MDY=%s DMY=%s", mdyISO, dmyISO)
 			}
-			// Production: prefer MDY for US closings
 		}
-		// Prefer MDY per spec
 		return mdyTime.Format("2006-01-02"), nil
 	}
 	if mdyTime != nil {
@@ -253,6 +238,3 @@ func normalizeDate(s string) (string, error) {
 	}
 	return "", fmt.Errorf("date parse failed for %q", s)
 }
-
-// CanonicalizeLabelValue performs label normalization + value normalization and builds NormalizedExtract.
-// This is the Go post-processor entry point.

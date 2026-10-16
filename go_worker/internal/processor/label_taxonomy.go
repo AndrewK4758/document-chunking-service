@@ -43,7 +43,7 @@ func TaxonomyPath() string {
 	return base
 }
 
-// IsFailFast returns true when development fail-fast is enabled.
+// IsFailFast reports whether strict startup/validation errors should panic.
 // Checks FAIL_FAST env, or APP_ENV/ENV == development.
 func IsFailFast() bool {
 	if v, ok := os.LookupEnv("FAIL_FAST"); ok {
@@ -116,15 +116,14 @@ func ValidateTaxonomy(tax map[string][]string) error {
 	return nil
 }
 
-// MustLoadTaxonomy loads taxonomy or panics in fail-fast mode, otherwise returns error.
-// Used at startup to satisfy health check fail-fast contract.
+// MustLoadTaxonomy loads the taxonomy at path, panicking when strict validation is enabled
+// or returning an empty taxonomy for degraded operation otherwise.
 func MustLoadTaxonomy(path string) (Taxonomy, string) {
 	tax, hash, err := LoadTaxonomy(path)
 	if err != nil {
 		if IsFailFast() {
 			panic(fmt.Sprintf("taxonomy_load_failed: %v", err))
 		}
-		// In non-fail-fast, return empty taxonomy and hash to allow degraded operation.
 		return make(Taxonomy), ""
 	}
 	return tax, hash
